@@ -34,12 +34,12 @@ struct DashboardView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: MB.Space.x5) {
                     header
-                    metrics
-                    syncSection
                     MBButton(title: "Capture raw motion", variant: .secondary, size: .lg,
                              icon: "waveform.path.ecg", block: true) {
                         showRawSensorCapture = true
                     }
+                    metrics
+                    syncSection
                     MBButton(title: "Customize", variant: .secondary, size: .lg,
                              icon: "square.grid.2x2", block: true, disabled: !connected) {
                         showCustomize = true
