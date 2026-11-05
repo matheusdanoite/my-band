@@ -45,6 +45,64 @@ struct RawSensorProtocolTests {
         #expect(start.contains(0x06))
     }
 
+    @Test
+    func exportsCreateMLTimeSeriesRowWithAppleFeatureNames() {
+        let row = RawSensorMotionRow(
+            timestamp: 1_000,
+            time: 0,
+            accelerometer: RawSensorVector(x: 1.25, y: -2.5, z: 9.81),
+            gyroscope: RawSensorVector(x: 0.1, y: 0.2, z: 0.3)
+        )
+
+        #expect(
+            XiaomiRawSensorProtocol.csvHeader
+                == "time_s,timestamp_us,accelerometerAccelerationX(G),accelerometerAccelerationY(G),accelerometerAccelerationZ(G),gyroscopeRotationRateX(rad/s),gyroscopeRotationRateY(rad/s),gyroscopeRotationRateZ(rad/s),accelerometerMagnitude(G),gyroscopeMagnitude(rad/s)\n"
+        )
+        #expect(
+            XiaomiRawSensorProtocol.csvRow(for: row)
+                == "0.000000,1000,1.250000,-2.500000,9.810000,0.100000,0.200000,0.300000,10.200422,0.374166\n"
+        )
+    }
+
+    @Test
+    func alignsSensorsWithinTimestampToleranceAndAddsRelativeTime() {
+        let samples = [
+            RawSensorSample(kind: .accelerometer, timestamp: 1_000_000, receivedAt: .now, x: 1, y: 2, z: 3),
+            RawSensorSample(kind: .gyroscope, timestamp: 1_005_000, receivedAt: .now, x: 4, y: 5, z: 6),
+            RawSensorSample(kind: .accelerometer, timestamp: 1_010_000, receivedAt: .now, x: 2, y: 3, z: 4),
+            RawSensorSample(kind: .gyroscope, timestamp: 1_015_000, receivedAt: .now, x: 5, y: 6, z: 7),
+        ]
+
+        let rows = XiaomiRawSensorProtocol.motionRows(from: samples)
+
+        #expect(rows.count == 2)
+        #expect(rows[0].time == 0)
+        #expect(abs(rows[0].gyroscope.x - 4) < 0.0001)
+        #expect(rows[1].time == 0.01)
+        #expect(abs(rows[1].gyroscope.x - 4.5) < 0.0001)
+    }
+
+    @Test
+    func dropsRowsOutsideSensorAlignmentTolerance() {
+        let samples = [
+            RawSensorSample(kind: .accelerometer, timestamp: 1_000_000, receivedAt: .now, x: 1, y: 2, z: 3),
+            RawSensorSample(kind: .gyroscope, timestamp: 1_050_001, receivedAt: .now, x: 4, y: 5, z: 6),
+        ]
+
+        let rows = XiaomiRawSensorProtocol.motionRows(from: samples)
+
+        #expect(rows.isEmpty)
+    }
+
+    @Test
+    func doesNotExportRowsWithoutBothSensors() {
+        let samples = [
+            RawSensorSample(kind: .accelerometer, timestamp: 1_000, receivedAt: .now, x: 1, y: 2, z: 3),
+        ]
+
+        #expect(XiaomiRawSensorProtocol.motionRows(from: samples).isEmpty)
+    }
+
     private func command(batch: Data) -> Data {
         let health = field(15, batch)
         return Data([0x08, 0x35]) + field(10, health)

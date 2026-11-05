@@ -14,7 +14,36 @@ struct RawSensorSample: Sendable {
     let z: Float
 }
 
+struct RawSensorVector: Sendable {
+    let x: Float
+    let y: Float
+    let z: Float
+}
+
+struct RawSensorMotionRow: Sendable {
+    let timestamp: UInt64
+    let time: Double
+    let accelerometer: RawSensorVector
+    let gyroscope: RawSensorVector
+}
+
 enum XiaomiRawSensorProtocol {
+
+    static let csvHeader = [
+        "time_s",
+        "timestamp_us",
+        "accelerometerAccelerationX(G)",
+        "accelerometerAccelerationY(G)",
+        "accelerometerAccelerationZ(G)",
+        "gyroscopeRotationRateX(rad/s)",
+        "gyroscopeRotationRateY(rad/s)",
+        "gyroscopeRotationRateZ(rad/s)",
+        "accelerometerMagnitude(G)",
+        "gyroscopeMagnitude(rad/s)",
+    ].joined(separator: ",") + "\n"
+
+    private static let timestampScale = 1_000_000.0
+    private static let sensorAlignmentTolerance: UInt64 = 20_000
 
     static let syntheticSport: UInt32 = 810
     private static let sportInfoType: UInt32 = 16
@@ -41,6 +70,90 @@ enum XiaomiRawSensorProtocol {
             }
         }
         return samples
+    }
+
+    static func motionRows(from samples: [RawSensorSample]) -> [RawSensorMotionRow] {
+        let accelerometers = samples
+            .filter { $0.kind == .accelerometer }
+            .sorted { $0.timestamp < $1.timestamp }
+        let gyroscopes = samples
+            .filter { $0.kind == .gyroscope }
+            .sorted { $0.timestamp < $1.timestamp }
+        guard !accelerometers.isEmpty, !gyroscopes.isEmpty,
+              let firstTimestamp = accelerometers.first?.timestamp else {
+            return []
+        }
+
+        return accelerometers.compactMap { anchor in
+            let counterpart = interpolatedVector(
+                at: anchor.timestamp,
+                in: gyroscopes
+            )
+            guard let counterpart else { return nil }
+            return RawSensorMotionRow(
+                timestamp: anchor.timestamp,
+                time: Double(anchor.timestamp - firstTimestamp) / timestampScale,
+                accelerometer: RawSensorVector(x: anchor.x, y: anchor.y, z: anchor.z),
+                gyroscope: counterpart
+            )
+        }
+    }
+
+    static func csvRow(for row: RawSensorMotionRow) -> String {
+        let accelerometer = row.accelerometer
+        let gyroscope = row.gyroscope
+        let locale = Locale(identifier: "en_US_POSIX")
+        return [
+            String(format: "%.6f", locale: locale, row.time),
+            String(row.timestamp),
+            String(format: "%.6f", locale: locale, accelerometer.x),
+            String(format: "%.6f", locale: locale, accelerometer.y),
+            String(format: "%.6f", locale: locale, accelerometer.z),
+            String(format: "%.6f", locale: locale, gyroscope.x),
+            String(format: "%.6f", locale: locale, gyroscope.y),
+            String(format: "%.6f", locale: locale, gyroscope.z),
+            String(format: "%.6f", locale: locale, magnitude(of: accelerometer)),
+            String(format: "%.6f", locale: locale, magnitude(of: gyroscope)),
+        ].joined(separator: ",") + "\n"
+    }
+
+    private static func interpolatedVector(
+        at timestamp: UInt64,
+        in samples: [RawSensorSample]
+    ) -> RawSensorVector? {
+        guard let first = samples.first, let last = samples.last else { return nil }
+        if timestamp < first.timestamp || timestamp > last.timestamp {
+            let distance = timestamp < first.timestamp
+                ? first.timestamp - timestamp
+                : timestamp - last.timestamp
+            guard distance <= sensorAlignmentTolerance else { return nil }
+            let sample = timestamp < first.timestamp ? first : last
+            return RawSensorVector(x: sample.x, y: sample.y, z: sample.z)
+        }
+
+        guard let upperIndex = samples.firstIndex(where: { $0.timestamp >= timestamp }) else {
+            return RawSensorVector(x: last.x, y: last.y, z: last.z)
+        }
+        let upper = samples[upperIndex]
+        guard upper.timestamp != timestamp, upperIndex > samples.startIndex else {
+            return RawSensorVector(x: upper.x, y: upper.y, z: upper.z)
+        }
+        let lower = samples[upperIndex - 1]
+        let span = Double(upper.timestamp - lower.timestamp)
+        let fraction = Double(timestamp - lower.timestamp) / span
+        return RawSensorVector(
+            x: interpolate(lower.x, upper.x, fraction),
+            y: interpolate(lower.y, upper.y, fraction),
+            z: interpolate(lower.z, upper.z, fraction)
+        )
+    }
+
+    private static func interpolate(_ lower: Float, _ upper: Float, _ fraction: Double) -> Float {
+        lower + Float(fraction) * (upper - lower)
+    }
+
+    private static func magnitude(of vector: RawSensorVector) -> Double {
+        sqrt(Double(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z))
     }
 
     static func startCommand(at date: Date = .now) -> Data {

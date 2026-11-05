@@ -18,6 +18,7 @@ final class RawSensorCaptureService {
     private var stopTask: Task<Void, Never>?
     private var ackCounter: UInt32 = 0
     private var batchesSinceAck = 0
+    private var samples: [RawSensorSample] = []
 
     func setup(manager: BandManager) {
         bandManager = manager
@@ -47,7 +48,7 @@ final class RawSensorCaptureService {
         let url = directory.appendingPathComponent(filename)
         FileManager.default.createFile(atPath: url.path, contents: nil)
         let handle = try FileHandle(forWritingTo: url)
-        try handle.write(contentsOf: Data("sensor,timestamp,received_at,x,y,z\n".utf8))
+        try handle.write(contentsOf: Data(XiaomiRawSensorProtocol.csvHeader.utf8))
 
         fileHandle = handle
         currentCaptureURL = url
@@ -55,6 +56,7 @@ final class RawSensorCaptureService {
         sampleCount = 0
         ackCounter = 0
         batchesSinceAck = 0
+        samples = []
         isCapturing = true
 
         bandManager?.setRealtimeStats(enabled: true)
@@ -76,6 +78,7 @@ final class RawSensorCaptureService {
         for command in XiaomiRawSensorProtocol.stopCommands() {
             bandManager?.sendEncryptedCommand(protoBytes: command)
         }
+        writeRows()
         closeFile()
         isCapturing = false
         log.info("Raw sensor capture stopped: \(self.sampleCount) samples")
@@ -114,15 +117,7 @@ final class RawSensorCaptureService {
         guard !samples.isEmpty else { return }
 
         for sample in samples {
-            let line = csvLine(for: sample)
-            guard let data = line.data(using: .utf8) else { continue }
-            do {
-                try fileHandle?.write(contentsOf: data)
-            } catch {
-                log.error("Raw sensor write failed: \(error.localizedDescription)")
-                stopCapture()
-                return
-            }
+            self.samples.append(sample)
             sampleCount += 1
             onSample?(sample)
         }
@@ -137,16 +132,20 @@ final class RawSensorCaptureService {
         }
     }
 
-    private func csvLine(for sample: RawSensorSample) -> String {
-        let locale = Locale(identifier: "en_US_POSIX")
-        return [
-            sample.kind.rawValue,
-            String(sample.timestamp),
-            String(format: "%.6f", locale: locale, sample.receivedAt.timeIntervalSince1970),
-            String(format: "%.6f", locale: locale, sample.x),
-            String(format: "%.6f", locale: locale, sample.y),
-            String(format: "%.6f", locale: locale, sample.z),
-        ].joined(separator: ",") + "\n"
+    private func writeRows() {
+        let rows = XiaomiRawSensorProtocol.motionRows(from: samples)
+        for row in rows {
+            guard let data = XiaomiRawSensorProtocol.csvRow(for: row).data(using: .utf8) else {
+                continue
+            }
+            do {
+                try fileHandle?.write(contentsOf: data)
+            } catch {
+                log.error("Raw sensor write failed: \(error.localizedDescription)")
+                break
+            }
+        }
+        samples.removeAll(keepingCapacity: false)
     }
 
     private func closeFile() {
