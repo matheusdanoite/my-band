@@ -38,12 +38,9 @@ struct My_BandApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        // On platforms without the UIKit AppDelegate (native macOS) nothing else bootstraps the
-        // services; do it here. Idempotent, so on iOS — where the AppDelegate already ran it before
-        // the scene loaded — this is a no-op. App.init is main-actor isolated (App is @MainActor).
-        #if !canImport(UIKit)
+        // Idempotent: on iOS the AppDelegate may also run this, and on headless AppIntent / macOS
+        // launches this ensures services and SwiftData are wired before any intent or scene runs.
         AppServices.shared.bootstrap(container: Self.sharedModelContainer)
-        #endif
     }
 
     var body: some Scene {

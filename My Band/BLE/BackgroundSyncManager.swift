@@ -306,8 +306,11 @@ final class BackgroundSyncManager {
         }
     }
 
-    /// Waits up to a few seconds for configure() to run on a cold, task-triggered launch.
+    /// Ensures dependencies are wired on a cold, task- or AppIntent-triggered launch.
     private func awaitDependencies() async throws {
+        if manager == nil || syncer == nil {
+            AppServices.shared.bootstrap(container: My_BandApp.sharedModelContainer)
+        }
         for _ in 0..<20 {
             if manager != nil, syncer != nil { return }
             try await Task.sleep(for: .milliseconds(250))

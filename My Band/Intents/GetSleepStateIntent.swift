@@ -28,10 +28,13 @@ struct GetSleepStateIntent: AppIntent {
     // Runs in the background without bringing the app to the foreground.
     static var openAppWhenRun = false
 
+    private static let connectWait: Duration = .seconds(10)
+
     private static let log = AppLogger(category: "SleepIntent")
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog & ReturnsValue<Bool> {
+        AppServices.shared.bootstrap(container: My_BandApp.sharedModelContainer)
         Self.log.info("Sleep intent run — \(DiagnosticLog.appContext())")
 
         // Best-effort refresh so the answer isn't working off hours-old data. A failure here (band
@@ -40,7 +43,8 @@ struct GetSleepStateIntent: AppIntent {
         // staleness this intent exists to avoid.
         var syncFailed = false
         do {
-            let outcome = try await BackgroundSyncManager.shared.syncNow(trigger: .sleepIntent)
+            let outcome = try await BackgroundSyncManager.shared.syncNow(trigger: .sleepIntent,
+                                                                         connectTimeout: Self.connectWait)
             Self.log.info("Sleep intent sync ok — \(outcome.sleepSessions) sleep report(s) in this sync")
         } catch {
             syncFailed = true

@@ -47,6 +47,7 @@ struct CheckBandBatteryIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Int?> {
+        AppServices.shared.bootstrap(container: My_BandApp.sharedModelContainer)
         let band = AppServices.shared.bandManager
         let hadLiveLink = band.connectionState.isConnected
 

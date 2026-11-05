@@ -1,3 +1,4 @@
+import AppIntents
 import Foundation
 import SwiftData
 
@@ -40,6 +41,7 @@ final class AppServices {
         rawSensorCapture.setup(manager: bandManager)
         bandSyncer.loadStoredDevice()
         BackgroundSyncManager.shared.configure(manager: bandManager, syncer: bandSyncer)
+        BandShortcuts.updateAppShortcutParameters()
         // Broadcast-only scale: a foreground listen is enough; harmless on a headless launch.
         scaleManager.start()
 

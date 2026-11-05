@@ -98,7 +98,6 @@
 			);
 			fileSystemSynchronizedGroups = (
 				93200F262FD62F9A00E8DC0C /* My Band */,
-				93AAC13D30749CB70062ACF0 /* Logs */,
 			);
 			name = "My Band";
 			packageProductDependencies = (
@@ -358,8 +357,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = mybandy.beta.matheusdanoite;
+				MARKETING_VERSION = 1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = myband.beta.matheusdanoite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -388,8 +387,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = mybandy.beta.matheusdanoite;
+				MARKETING_VERSION = 1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = myband.beta.matheusdanoite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

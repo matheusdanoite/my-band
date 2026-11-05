@@ -18,6 +18,7 @@ struct SyncBandIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        AppServices.shared.bootstrap(container: My_BandApp.sharedModelContainer)
         do {
             let outcome = try await BackgroundSyncManager.shared.syncNow(trigger: .syncIntent)
             return .result(dialog: IntentDialog(stringLiteral: Self.summary(outcome)))
@@ -31,6 +32,11 @@ struct SyncBandIntent: AppIntent {
     }
 
     private static func summary(_ o: BandSyncer.HealthSyncOutcome) -> String {
+        if o.deferredUntilUnlock {
+            return o.sleepSessions > 0
+                ? "Phone is locked. Stored \(o.sleepSessions) sleep report(s) to sync when unlocked."
+                : "Phone is locked. Sync will finish when unlocked."
+        }
         if o.healthSamplesWritten == 0 {
             return "Everything was already synced. No new data."
         }
