@@ -16,6 +16,7 @@ struct DashboardView: View {
     @State private var resultIsError = false
     @State private var showCustomize = false
     @State private var showProfile = false
+    @State private var showRawSensorCapture = false
 
     private var connected: Bool { band.connectionState.isConnected }
     /// Mid-handshake (or scanning) — a reconnect is already under way, so the button waits.
@@ -35,6 +36,10 @@ struct DashboardView: View {
                     header
                     metrics
                     syncSection
+                    MBButton(title: "Capture raw motion", variant: .secondary, size: .lg,
+                             icon: "waveform.path.ecg", block: true) {
+                        showRawSensorCapture = true
+                    }
                     MBButton(title: "Customize", variant: .secondary, size: .lg,
                              icon: "square.grid.2x2", block: true, disabled: !connected) {
                         showCustomize = true
@@ -54,6 +59,7 @@ struct DashboardView: View {
         }
         .sheet(isPresented: $showCustomize) { CustomizeView() }
         .sheet(isPresented: $showProfile) { ProfileView() }
+        .sheet(isPresented: $showRawSensorCapture) { RawSensorCaptureView() }
     }
 
     // MARK: Header

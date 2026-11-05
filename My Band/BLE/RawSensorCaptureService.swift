@@ -8,6 +8,7 @@ final class RawSensorCaptureService {
     private(set) var isCapturing = false
     private(set) var sampleCount = 0
     private(set) var currentCaptureURL: URL?
+    private(set) var captureURLs: [URL] = []
 
     var onSample: ((RawSensorSample) -> Void)?
 
@@ -20,6 +21,7 @@ final class RawSensorCaptureService {
 
     func setup(manager: BandManager) {
         bandManager = manager
+        refreshCaptures()
         manager.onRawSensorWorkoutOpen = { [weak self] in
             Task { @MainActor in
                 self?.handleWorkoutOpen()
@@ -40,7 +42,8 @@ final class RawSensorCaptureService {
 
         let directory = try captureDirectory()
         let formatter = ISO8601DateFormatter()
-        let filename = "raw-sensor-\(formatter.string(from: .now).replacingOccurrences(of: ":", with: "-")).csv"
+        let startedAt = Date.now
+        let filename = "raw-sensor-\(formatter.string(from: startedAt).replacingOccurrences(of: ":", with: "-")).csv"
         let url = directory.appendingPathComponent(filename)
         FileManager.default.createFile(atPath: url.path, contents: nil)
         let handle = try FileHandle(forWritingTo: url)
@@ -48,6 +51,7 @@ final class RawSensorCaptureService {
 
         fileHandle = handle
         currentCaptureURL = url
+        captureURLs.insert(url, at: 0)
         sampleCount = 0
         ackCounter = 0
         batchesSinceAck = 0
@@ -77,6 +81,26 @@ final class RawSensorCaptureService {
         log.info("Raw sensor capture stopped: \(self.sampleCount) samples")
     }
 
+    func refreshCaptures() {
+        guard let directory = try? captureDirectory() else {
+            captureURLs = []
+            return
+        }
+        captureURLs = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ))?
+        .filter { $0.pathExtension.lowercased() == "csv" }
+        .sorted { lhs, rhs in
+            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            return lhsDate > rhsDate
+        } ?? []
+    }
+
     private func handleWorkoutOpen() {
         guard isCapturing else { return }
         bandManager?.sendEncryptedCommand(
@@ -90,7 +114,7 @@ final class RawSensorCaptureService {
         guard !samples.isEmpty else { return }
 
         for sample in samples {
-            let line = "\(sample.kind.rawValue),\(sample.timestamp),\(sample.receivedAt.timeIntervalSince1970),\(sample.x),\(sample.y),\(sample.z)\n"
+            let line = csvLine(for: sample)
             guard let data = line.data(using: .utf8) else { continue }
             do {
                 try fileHandle?.write(contentsOf: data)
@@ -111,6 +135,18 @@ final class RawSensorCaptureService {
                 protoBytes: XiaomiRawSensorProtocol.ackCommand(counter: ackCounter)
             )
         }
+    }
+
+    private func csvLine(for sample: RawSensorSample) -> String {
+        let locale = Locale(identifier: "en_US_POSIX")
+        return [
+            sample.kind.rawValue,
+            String(sample.timestamp),
+            String(format: "%.6f", locale: locale, sample.receivedAt.timeIntervalSince1970),
+            String(format: "%.6f", locale: locale, sample.x),
+            String(format: "%.6f", locale: locale, sample.y),
+            String(format: "%.6f", locale: locale, sample.z),
+        ].joined(separator: ",") + "\n"
     }
 
     private func closeFile() {
