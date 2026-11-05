@@ -71,4 +71,17 @@ struct XiaomiActivityFileMeta {
     var isWorkoutGps: Bool     { type == .sports && detail == .gps }
     /// The per-second sensor series recorded during a workout (e.g. subtype 8 = heart rate).
     var isWorkoutDetails: Bool { type == .sports && detail == .details }
+
+    /// Short name for logs and fixtures.
+    var kindLabel: String {
+        if isWorkoutSummary { return "workout-summary" }
+        if isWorkoutGps     { return "workout-gps" }
+        if isWorkoutDetails { return "workout-details" }
+        if isSleepDetails   { return "sleep-details" }
+        if isSleepStages    { return "sleep-stages" }
+        if isManualSamples  { return "manual" }
+        if isDailySummary   { return "daily-summary" }
+        if isDailyDetails   { return "daily-details" }
+        return "unknown"
+    }
 }

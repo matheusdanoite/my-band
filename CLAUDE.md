@@ -51,7 +51,12 @@ My Band/
 │
 ├── Health/
 │   ├── HealthKitManager.swift    # Authorization and writing to Apple Health
-│   └── HealthSyncService.swift  # Conversion of Mi Band data → HealthKit types
+│   ├── HealthSyncService.swift  # Conversion of Mi Band data → HealthKit types
+│   └── HeartRateVariability.swift # Sleep RR intervals → heartbeat series + SDNN per minute
+│
+├── Diagnostics/
+│   ├── AppLogger.swift           # Drop-in for os.Logger on connection/sync path — also writes to file
+│   └── DiagnosticLog.swift       # Persistent log in file (current + 1 generation, 2 MB each), exportable
 │
 ├── Intents/
 │   ├── SyncBandIntent.swift      # App Intent: sync data now
@@ -74,7 +79,7 @@ My Band/
     ├── Sleep/                    # Detailed sleep visualization
     ├── Profile/                  # User profile (height → BMI in Apple Health)
     ├── Customize/                # Watch faces and RPK apps
-    └── Settings/                 # General settings
+    └── Settings/                 # General settings (DiagnosticsView: export diagnostic log)
 ```
 
 ---
@@ -218,9 +223,13 @@ The same file-id mechanism serves **all** data types — each 7-byte id (`Xiaomi
 
 Sleep `0x08`: each stage entry is UInt16 BE — bits[15:12]=stage (0=awake,1=light,2=deep,3=rem), bits[11:0]=duration_min.
 
+> **A sleep file brings multiple re-scorings of the night, and only the latest counts.** Each time the band re-scores the night it appends to the file a pair of summary (type 16) + stages (type 17), both with the bedtime timestamp, each covering the **entire** night — reclassifying older segments. `SleepDetailsParser` keeps only the latest type 17 for each timestamp (`stageRevisions`, `finalRevisionMatchesSummary` in the log). Merging all and letting the oldest win, as before, diverged from the band in 13% of minutes. In the 13 re-scorings in the 2026-10-11 log, each summary matches minute-by-minute with the stages immediately following it (test with the real file in `My BandTests/SleepFixtures.swift`). An empty type 17 with a timestamp from days earlier appears as residue and is ignored.
+
 > **Two sleep formats.** GadgetBridge uses `SleepStagesParser` for `0x03` (ACTIVITY_SLEEP_STAGES, **transition-event** layout, stage codes `2=deep,3=light,4=rem,5=awake`) and `SleepDetailsParser` for `0x08` (**duration** layout). **Validated on hardware (Mi Band 10, 2026-06-21): the real sleep fetch works with `SleepDetailsParser` — the band emits `0x08`.** The `0x03` used to fall into the same parser, which read the bytes at the wrong offsets; it now goes to the ported `SleepStagesParser` (version 2 only, as in GadgetBridge; covered by a synthetic file, **not** by a real capture). `0x08` versions outside 1–5 return empty instead of guessing the layout. `BandSyncer` logs one line per sleep file (`Sleep file … N session(s), N phase(s), N HR, N SpO₂`) — that is how you can see, in the console, whether a night arrived and in what format.
 >
-> **A sleep file is never confirmed without being read, nor does it bring down the rest.** If the band answers a fetch with another file still without an ACK, that file is routed normally and only then ACKed (before, it was ACKed blindly, losing the content). Writing the sleep data runs isolated in `processActivityFiles`: if it throws, only the sleep files stay without an ACK and come back on the next sync — manual measurements, workouts and daily detail carry on. Each file's fetch uses an **inactivity** timeout (10 s without a chunk), not a fixed cap.
+> **A sleep file is never confirmed before being written, nor does it bring down the rest.** `processActivityFiles` fetches sleep files **first**, writes the night, and only then confirms them before fetching any other. If the band answers a fetch with another file still without an ACK, it is routed normally; a non-sleep file is ACKed immediately to unblock it, but a sleep file only after being written (`flushSleep`) — premature ACK lost the night from the band 4 times in 2026-10-01, each followed by a failed write while the iPhone was locked. If writing cannot proceed, fetching halts there. Sleep writing runs isolated: if it throws, only the sleep files stay without an ACK and come back on the next sync — manual measurements, workouts, and daily detail carry on. Each file fetch uses an **inactivity** timeout (10 s without a chunk), not a fixed cap.
+>
+> **A night arrives in multiple reports, and the most complete governs.** According to GadgetBridge, the band can deliver the same night multiple times until the user wakes up (same bedtime, larger end), and each file becomes a local `SleepSession`. `writeSleep` deletes what the app already wrote in the night's window before re-writing — so a partial report written alone, after a more complete one, **deleted the rest of the night** in Apple Health. `BandSyncer.withStoredReports` joins all overlapping stored sessions (transitively) to the batch, and `HealthKitManager.mergedPhases` merges: where reports diverge, the one extending furthest into the night wins (the band re-scores phases); previous ones only fill what it does not cover. `SleepDetailsParser` discards phase packets more than 6 h outside the `bed…wake` window and widens the session to cover remaining phases. The header's `isAwake` byte (`awakeFlag`) is **0 with the night open and 1 after the band closes it** (hardware, 2026-10-01: 0 in five syncs until 13:31 with end frozen at 12:37, 1 at 15:17), and is stored in `SleepSession` for `GetSleepStateIntent`. Nights truncated before this fix are rewritten once from local storage (`repairSleepHistoryOnce`, flag `sleepHistoryRepairedV2`, only in foreground sync), except those Apple Health holds more completely than local (`HealthKitManager.healthHoldsMore`): a repair never shrinks a night. This repair only covers local storage, recreated on hardware on 2026-09-09; earlier nights exist only in Apple Health, stacked by old identifiers, and are rebuilt once from Health itself (`HealthKitManager.rebuildSleepHistoryFromHealth`, flag `sleepHistoryRebuiltFromHealthV3`). Stacked night = more than one "in bed" or overlapping phases; on equal start time the shorter sample wins (92% agreement with per-report merge in real export, best of five rules); nights over 16 h stay as-is and log; writes before deleting since Health is the only copy.
 
 ### Watch face and app installation (app → band)
 
@@ -260,16 +269,26 @@ Customization feature (`BLE/Upload/`), ported from GadgetBridge. The proto messa
 
 ### Sync orchestration
 
-`BackgroundSyncManager` is the **single entry point** of every sync (foreground or background). All triggers go through `syncNow(disconnectWhenDone:)`, which **coalesces** concurrent calls into a single in-flight `Task` — the Dashboard button, App Intent/Siri, BGTask and the BLE wake-up never fire two fetches at the same time. `disconnectWhenDone`: `nil` = only disconnect if the sync itself opened the link (a live foreground link stays); `true`/`false` forces (background wake-ups pass `true` to release the radio). `syncToHealth()`/`syncWorkoutFiles()` also have a re-entrancy guard (`!isSyncing`), serialized by `@MainActor` (guard + set before the first `await`).
+`BackgroundSyncManager` is the **single entry point** of every sync (foreground or background). All triggers go through `syncNow(disconnectWhenDone:trigger:)`, which **coalesces** concurrent calls into a single in-flight `Task` — the Dashboard button, App Intent/Siri, BGTask and the BLE wake-up never fire two fetches at the same time. `disconnectWhenDone`: `nil` = only disconnect if the sync itself opened the link (a live foreground link stays); `true`/`false` forces (background wake-ups pass `true` to release the radio). When the sync itself releases the link, it waits ~1 s before (`releaseLink`): the final writes (file ACKs) go write-without-response and may still be in CoreBluetooth's queue — a file whose ACK didn't arrive returns on the next connection. `syncToHealth()`/`syncWorkoutFiles()` also have a re-entrancy guard (`!isSyncing`), serialized by `@MainActor` (guard + set before the first `await`).
+
+> **With the iPhone locked, the sync only stores sleep.** Apple Health does not respond to queries while the device is locked, and every write queries first — in the 2026-10-01…11 log, 26 of 27 syncs reaching the band while locked failed with `com.apple.healthkit 6`, almost all overnight BLE wakeups. With `!BandSyncer.healthReadable` (`isProtectedDataAvailable`), `syncToHealth` lists files, fetches **only sleep files**, stores them in SwiftData (`healthKitSynced = false`, `fetchedAt`) and finishes without error and without any ACK (`HealthSyncOutcome.deferredUntilUnlock`, log `Sync staged`); `syncWorkoutFiles` fetches nothing. The flag `healthSyncDeferredUntilUnlock` (UserDefaults) flags the deferred sync. On unlock (`applicationProtectedDataDidBecomeAvailable` → `BackgroundSyncManager.protectedDataBecameAvailable`), the app writes pending reports to Health directly from storage (`flushPendingSleep`, without the band) and, if a sync is deferred, runs `syncNow(trigger: .unlock)` with 10 s to connect. This only happens if the process is alive; otherwise, the next unlocked sync writes pending ones (`writePendingSleep`) before fetching. A report stored before this change lacks `fetchedAt` and never counts as pending.
 
 Background triggers, in order of frequency/reliability:
-1. **BLE wake-up (state restoration).** When the band comes back into range, CoreBluetooth relaunches the app; on authenticating, `BandSyncer.onAuthenticated` calls `syncOnBackgroundWakeIfStale()` — it only runs if in the background, throttled by `lastHealthSync` (15 min) and disconnecting at the end. This is the most reliable path (the BLE event is what wakes the app).
+1. **BLE wake-up (state restoration).** When the band comes back into range, CoreBluetooth relaunches the app; on authenticating, `BandSyncer.onAuthenticated` calls `syncOnBackgroundWakeIfStale()` — it only runs if in the background, throttled by `lastHealthSync` or `lastStagedSync` (15 min; overnight the band drops and reconnects every few minutes) and disconnecting at the end. This is the most reliable path (the BLE event is what wakes the app).
 2. **`BGAppRefreshTask`** (`com.myband.refresh`) — light, scheduled frequently by the OS.
 3. **`BGProcessingTask`** (`com.myband.sync`) — heavy/deferrable, usually runs while charging.
 
 Both BGTasks are registered in `register()` (from `AppDelegate.didFinishLaunching` — the only window allowed by `BGTaskScheduler.register`) and rescheduled in `scheduleNext()` when going to the background (`scenePhase`). `Info.plist`: both ids in `BGTaskSchedulerPermittedIdentifiers` and the `fetch` (app-refresh) + `processing` background modes. On a cold launch triggered by a task, `awaitDependencies()` waits for the UI's `configure()`. The `expirationHandler` is installed **inside the `register` closure itself**, on the scheduler's queue, before the hop to the main actor — that hop once took 6 s in a freshly resumed app, and a task that expires without a handler is completed as a failure by iOS (which then schedules fewer). `finish(_:success:)` guarantees a single `setTaskCompleted`, whether it comes from the sync or from the expiration.
 
 > The end of a workout has its own path (`handleWorkoutFinished`): it waits ~8 s for the file flush and fetches the named file-ids via `syncWorkoutFiles`, without going through `syncNow` (but protected by the same `!isSyncing` guard).
+
+### Log de diagnóstico
+
+O sync que mais precisa de depuração roda sem ninguém olhando: a pulseira alcança o iPhone de madrugada, o CoreBluetooth relança o app em segundo plano e cada arquivo de atividade é buscado e ACKado **uma vez**. O console do Xcode não pega isso, e o `OSLogStore` no iOS só lê o processo atual. Por isso o caminho de conexão/sync (`BandManager`, `BandSyncer`, `BackgroundSyncManager`, `HealthKitManager`, serviços de push, intents, `AppDelegate`) loga com **`AppLogger`** (`Diagnostics/`), drop-in do `os.Logger` que também grava cada linha em **`DiagnosticLog`**: arquivo em Application Support, rotação por tamanho (atual + 1 geração, 2 MB cada), proteção `completeUntilFirstUserAuthentication` (loga com o iPhone bloqueado; antes do primeiro desbloqueio pós-boot as linhas esperam em memória). O usuário exporta em Dashboard › Log de diagnóstico (`UI/Settings/DiagnosticsView`, folha de compartilhamento).
+
+- Linha nova no caminho de sync usa `AppLogger`, não `Logger` — senão ela não entra no arquivo exportado.
+- O arquivo sai do telefone: AuthKey e chaves de sessão continuam proibidos, e interpolações `privacy: .private` são redigidas também no arquivo. Os dados de sono (horários, fases e o hex bruto de cada arquivo de sono, linha `raw …`) **entram** de propósito — é o que permite re-verificar um parse depois que a noite já saiu da pulseira. O arquivo também fica guardado na `SleepSession` (`rawData`, só no relatório que vai mais longe na noite); subir `BandSyncer.sleepParserRevision` faz o próximo sync em primeiro plano reler todos e regravar as noites. Para noites guardadas antes disso, ou já fora da pulseira, a mesma tela tem "Reprocessar sono de um log": lê as linhas `raw …` de um log exportado (`BandSyncer.importSleepFiles`) e regrava as noites com o parser atual.
+- Cada sync registra: gatilho (`SyncTrigger`: manual, intents, BGTask, acordar por BLE), estado do app e se os dados protegidos estão disponíveis (o Apple Health não responde a consultas com o iPhone bloqueado), cada file-id listado, o cabeçalho de cada arquivo de sono (`bed`/`wake`/`awakeFlag`/tipos de pacote), a mescla de cada noite no Health e a decisão do `GetSleepStateIntent`. Erros saem com domínio e código (`DiagnosticLog.describe`). Cada processo abre com uma linha `Launch`; o que o lançou vem nas linhas seguintes — `State restored: …, peripheral connected` é um relançamento por evento BLE, `disconnected` é outro lançamento (BGTask, intent) em que o restore só devolve o periférico. O `launchOptions[.bluetoothCentrals]` vinha nil em todo relançamento por BLE sob o ciclo de vida SwiftUI e não é usado. `App terminating` marca um encerramento com o app em execução.
 
 ---
 
@@ -326,6 +345,8 @@ Ports `PasswordXiaomiCloudConnector` from `token_extractor/token_extractor.py` �
 | Physical effort (METs/min: the band's active kcal ÷ weight from Health) | `HKQuantityTypeIdentifier.physicalEffort` |
 | Workout effort, 1–10 scale (average HR ÷ age-based max HR, Tanaka) | `.estimatedWorkoutEffortScore` (iOS 18+, via `relateWorkoutEffortSample`) |
 | Heart-rate recovery (peak at the end of the workout − HR/min at end+60 s) | `HKQuantityTypeIdentifier.heartRateRecoveryOneMinute` |
+| Sleep heartbeats (RR intervals, type 1 packets) | `HKSeriesType.heartbeat()` via `HKHeartbeatSeriesBuilder` — one series per ~10 min block |
+| Sleep HRV (SDNN of each clean minute) | `HKQuantityTypeIdentifier.heartRateVariabilitySDNN` |
 | Speed during a workout (V2 GPS points, m/s) | `.runningSpeed` / `.cyclingSpeed` |
 | Average running stride (distance ÷ steps) | `HKQuantityTypeIdentifier.runningStrideLength` |
 | Rowing distance (iOS 18+; before that it fell back to walking distance) | `HKQuantityTypeIdentifier.distanceRowing` |
@@ -334,6 +355,14 @@ Ports `PasswordXiaomiCloudConnector` from `token_extractor/token_extractor.py` �
 >
 > **Heart-rate recovery runs on the daily-file path, not in `writeWorkouts`.** The workout's 1 Hz series ends exactly at the end of the workout (count == duration), so the end+60 s reading only arrives in the next daily detail file. `writeHeartRateRecoveries` queries the app's **own** recent workouts in Health (regardless of which sync wrote the workout), matches the peak of the last minute (1 Hz series, `HKStatisticsQuery` discreteMax) with the per-minute reading closest to end+60 s (±30 s) and writes the delta. Best-effort in `BandSyncer` — it doesn't block the file ACKs.
 >
+> **HRV: SDNN per minute, the Apple Watch window.** SDNN increases with the window (nights of 2026-10-01…03: median 46–59 ms in 1 min, 63–78 ms in 5 min) and Health does not record which window was used, so mixing windows would make values incomparable. `HeartRateVariability`, pure and tested against real nights:
+> - An artifact is an interval outside 300–2000 ms or >20% from the median of the 5 neighbors on each side (~3% in real night).
+> - A minute, counted from the first beat of the block, only gets a value with ≥50 s of intervals and ≥80% clean; otherwise it leaves a gap, not a number.
+> - Sample SDNN (n−1). RMSSD is not used: the 40 ms resolution zeroes out one-third of successive differences.
+> - The heartbeat series stores all beats. The beat closing a rejected interval carries `precededByGap`, and the series starts 10 ms before the first beat because the builder requires positive offset.
+> - Per-minute values have sync id `mb-hrv-<s>` with `hrvVersion`. Series have `mb-beats-<ms>` and are queried in Health before writing, since the builder does not replace.
+> - Best-effort write after sleep: a failure never holds back the ACK, and the stored file reconstructs everything.
+
 > **Mobility remains exclusive to the iPhone.** `walkingSpeed`/`walkingStepLength` are writable, but they would feed the Mobility metrics that the reconciliation deliberately preserves — that is why the speed series is only written for running/cycling (`speedType(_:)` returns nil for walking/hiking) and the stride uses `runningStrideLength`, not `walkingStepLength`.
 
 ### Permissions (Info.plist)
@@ -376,9 +405,9 @@ NSHealthShareUsageDescription
 | `CheckBandBatteryIntent` | `threshold: Int` (1–100, default 30) | `Int?` (level) + local notification **only** if below the threshold |
 | `RunBandMiniAppIntent` | `appId: String` | (Future phase) |
 
-> **`GetSleepStateIntent` is pull, not push.** The band has no "fell asleep"/"woke up" event (see "Band-initiated commands" above) — sleep is only known after the app syncs. The intent forces a sync (`BackgroundSyncManager.shared.syncNow()`, best-effort — failure isn't fatal) before answering, and considers the data "asleep" only if the last synced session ended less than 1h ago and its last phase is not `.awake`. The dialog always states the age of the data ("asleep, data from X min ago"), so a chained Personal Automation never silently acts on a stale state.
+> **`GetSleepStateIntent` is pull, not push.** The band has no "fell asleep"/"woke up" event (see "Band-initiated commands" above) — sleep is only known after the app syncs. The intent forces a sync (`BackgroundSyncManager.shared.syncNow()`, best-effort — failure isn't fatal; with the iPhone locked it only fetches and stores sleep, which suffices here) before answering. The decision uses `SleepStateRule`: with an open night (`awakeFlag == 0`), the report end follows sync time, freezing when the user wakes up — the flag only flips to 1 an hour or more later. Thus "asleep" = open night, end within 5 min of `fetchedAt` (re-fetching the same bytes updates `fetchedAt` and not end), fetched <1 h ago, and last phase is not `.awake`. The dialog always states the age of the data ("asleep, data from X min ago"), so a chained Personal Automation never silently acts on stale data. The session used is the one that **ends last**, with ties broken by most recent fetch (`BandSyncer.mostRecentSleepSession(in:)`).
 
-> **`CheckBandBatteryIntent` is silent by default.** Designed for a Personal Automation "when the iPhone's charger is connected": remember to put the band on the charger too. A shortcut that spoke on every run would become noise, so it has **no dialog** — it runs the full sync **holding the link** (`syncNow(disconnectWhenDone: false)`; with the default, the sync disconnected the link it had opened itself and the request below became dead code), requests a fresh reading while the link is open (`BandManager.refreshBattery` — the in-memory level may be stale on a long connection), waits for the responses (3 s cap, not a sleep) and only acts if `level < threshold` **and** the band isn't already on the charger, posting a local notification. The level also comes out as a return value, for anyone who wants to chain their own condition. Band out of range → answers with the last known level instead of failing the shortcut (and the whole automation); no reading at all → `nil`, without notifying. The radio is released at the end of the intent, and only if there was no live link before it.
+> **`CheckBandBatteryIntent` is silent by default.** Designed for a Personal Automation "when the iPhone's charger is connected": remember to put the band on the charger too. A shortcut that spoke on every run would become noise, so it has **no dialog** — it runs the full sync **holding the link** (`syncNow(disconnectWhenDone: false)`; with the default, the sync disconnected the link it had opened itself and the request below became dead code), requests a fresh reading while the link is open (`BandManager.refreshBattery` — the in-memory level may be stale on a long connection), waits for the responses (3 s cap, not a sleep) and only acts if `level < threshold` **and** the band isn't already on the charger, posting a local notification. The level also comes out as a return value, for anyone who wants to chain their own condition. Band out of range → waits at most 10 s for connection (`syncNow(connectTimeout:)`) and answers with the last known level instead of failing the shortcut (and the whole automation); no reading at all → `nil`, without notifying. The radio is released at the end of the intent, and only if there was no live link before it.
 >
 > **The level is the same as iOS's Batteries widget.** There is no API to read the widget (it uses the private `BatteryCenter` framework), but the **same source** can be read: the standard GATT Battery Service (`0x180F` / `0x2A19`), which iOS queries on paired BLE accessories. `BandManager` discovers it together with `FE95` and, when it exists, `2A19` owns `batteryLevel`; the protobuf `CMD_BATTERY` is still requested because only it carries the charging state (`battery.state == 1`). Without `180F`, the level goes back to coming from the protobuf. **Reading and subscribing to `2A19` only after auth**: if the characteristic requires encryption, touching it on a link with no bond yet would make iOS raise the pairing sheet *before* the band's dialog, inverting the order of the two prompts that ADR 0003 relies on. Accepted consequence: without auth there is no GATT reading, even if the band exposes it.
 
@@ -435,7 +464,11 @@ The UI is built from the **Claude Design** handoff (`My Band — Design System`,
     var startDate: Date
     var endDate: Date
     var phases: [SleepPhase]          // Codable embedded
-    var healthKitSynced: Bool
+    var healthKitSynced: Bool         // false = guardado com o iPhone bloqueado, grava no desbloqueio
+    var rawDataHash: Int              // dedup por arquivo: um relatório por arquivo distinto
+    var awakeFlag: Int?               // 0 = noite aberta, 1 = fechada pela pulseira
+    var fetchedAt: Date?              // última vez que estes bytes chegaram da pulseira
+    @Attribute(.externalStorage) var rawData: Data?  // só no relatório que vai mais longe na noite
     var device: BandDevice?
 }
 
@@ -474,6 +507,8 @@ Current version: **1.2.0** — see `CHANGELOG.md` for the full history. Next pha
 3. The Xiaomi Cloud username/password login with captcha and 2FA (ADR 0002; simple login already confirmed).
 4. The `GetSleepStateIntent`.
 5. The `CheckBandBatteryIntent` — in particular the on-demand `CMD_BATTERY` outside the post-auth init (the response arrives in the same `handleSystemCommand`, but it has never been exercised with a link that has already been open for a while). And whether the Mi Band 10 exposes the `0x180F` Battery Service to apps (the `Services:` line of the connection log answers), whether `2A19` reads without error post-auth and whether the number matches the Batteries widget — the log prints both (`via GATT 2A19` / `via protobuf — keeping GATT`).
+6. Sleep on a real night with the 2026-10-11 changes, via diagnostic log: overnight while locked should show `Sync staged` (no longer `healthkit 6`) and unlock shows `Pending sleep written`; each sleep file should indicate `the last kept — it matches the band's summary`; and `GetSleepStateIntent` in a nightly automation should switch to "awake" minutes after waking up, not an hour. Also confirm if the band lists an open night's file on every sync even after ACK. Answered by 01–11/10 logs: overnight syncs failed from `protected data unavailable`, and `awakeFlag` is 0 with the night open and 1 once closed.
+7. Nighttime SpO₂: no sleep file so far announced an SpO₂ section in the header (`no SpO₂ section in the header`), pointing to night measurements disabled on the band rather than parser bugs. And HRV (type 1 packets, written since 2026-10-11): confirmed as RR intervals in the 2026-10-11 logs (54 and 135 packets). Format: timestamp in **ms** = start of window; payload = one `u8` per beat in 10 ms units (`SleepDetailsParser.java` in GadgetBridge), always multiple of 4 — 40 ms resolution, PPG at 25 Hz. Each packet covers ~600 s of beats, and the next starts ~605 s later. Written as heartbeat series + SDNN per minute.
 
 Home Assistant was cut from the roadmap; the UI remains without health-data visualization by decision (see ADR 0001).
 
@@ -487,6 +522,7 @@ Home Assistant was cut from the roadmap; the UI remains without health-data visu
 - **async/await** for all BLE and network operations — no nested callbacks
 - **`BandManager` is `@Observable @MainActor NSObject`** — not a pure Swift `actor`. CBCentralManagerDelegate requires NSObject; configuring `CBCentralManager` with `queue: .main` makes the callbacks arrive on the main thread, aligned with `@MainActor` without extra bridging
 - **No force-unwrap** — handle errors explicitly
+- **Connection/sync path logging via `AppLogger`**, not `os.Logger` — see "Diagnostic log"
 - Minimum iOS 17 / macOS 14 — use modern APIs without compatibility shims
 
 ---

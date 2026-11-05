@@ -31,6 +31,11 @@
 			path = "My Band";
 			sourceTree = "<group>";
 		};
+		93AAC13D30749CB70062ACF0 /* Logs */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Logs;
+			sourceTree = "<group>";
+		};
 		AB00000000000000000000A9 /* My BandTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "My BandTests";
@@ -62,6 +67,7 @@
 			children = (
 				93200F262FD62F9A00E8DC0C /* My Band */,
 				AB00000000000000000000A9 /* My BandTests */,
+				93AAC13D30749CB70062ACF0 /* Logs */,
 				93200F252FD62F9A00E8DC0C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -92,6 +98,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				93200F262FD62F9A00E8DC0C /* My Band */,
+				93AAC13D30749CB70062ACF0 /* Logs */,
 			);
 			name = "My Band";
 			packageProductDependencies = (
@@ -352,7 +359,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = myband.beta.matheusdanoite;
+				PRODUCT_BUNDLE_IDENTIFIER = mybandy.beta.matheusdanoite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -382,7 +389,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = myband.beta.matheusdanoite;
+				PRODUCT_BUNDLE_IDENTIFIER = mybandy.beta.matheusdanoite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

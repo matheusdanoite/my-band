@@ -19,7 +19,7 @@ struct SyncBandIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         do {
-            let outcome = try await BackgroundSyncManager.shared.syncNow()
+            let outcome = try await BackgroundSyncManager.shared.syncNow(trigger: .syncIntent)
             return .result(dialog: IntentDialog(stringLiteral: Self.summary(outcome)))
         } catch SyncError.noDeviceRecord {
             return .result(dialog: "No band paired. Open My Band to set it up.")

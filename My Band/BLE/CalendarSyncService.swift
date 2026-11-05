@@ -18,7 +18,7 @@ final class CalendarSyncService {
 
     private weak var bandManager: BandManager?
     private let store = EKEventStore()
-    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.myband", category: "CalSync")
+    private let log = AppLogger(category: "CalSync")
 
     private let maxEvents = 50
     private let maxReminders = 20

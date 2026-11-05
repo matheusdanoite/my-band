@@ -51,7 +51,7 @@ final class BackgroundSyncManager {
     /// Tasks whose expiry beat `handle` to the main actor, so `handle` knows not to start them.
     private var expiredBeforeStart: Set<ObjectIdentifier> = []
 
-    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.myband", category: "BGSync")
+    private let log = AppLogger(category: "BGSync")
 
     private init() {}
 
@@ -137,15 +137,16 @@ final class BackgroundSyncManager {
         // Always queue the next run first, so a failure here doesn't break the chain.
         scheduleNext()
 
+        let trigger: SyncTrigger = task.identifier == Self.refreshTaskID ? .bgRefresh : .bgProcessing
         backgroundRuns[key] = Task { @MainActor in
             do {
-                _ = try await syncNow()
+                _ = try await syncNow(trigger: trigger)
                 log.info("Background sync completed")
                 finish(task, success: true)
             } catch is CancellationError {
                 finish(task, success: false)
             } catch {
-                log.error("Background sync failed: \(error.localizedDescription)")
+                log.error("Background sync failed: \(DiagnosticLog.describe(error))")
                 finish(task, success: false)
             }
         }
@@ -175,22 +176,53 @@ final class BackgroundSyncManager {
 
     // MARK: - Sync (coalesced)
 
+    /// What asked for a sync. Only the diagnostic log uses it: it has to tell a BLE wake at 3 a.m.
+    /// apart from a Shortcut or a tap on the button.
+    enum SyncTrigger: String {
+        case manual, syncIntent, sleepIntent, batteryIntent, bgRefresh, bgProcessing, bleWake, unlock
+    }
+
     /// Foreground-aware sync. Concurrent callers share a single run.
     /// `disconnectWhenDone`: nil = disconnect only if we opened the link (live foreground links stay
     /// up); true/false force the behaviour (background wakes pass true to free the radio).
+    /// `connectTimeout`: how long to wait for the band when the link is down. A caller that has a
+    /// fallback for an absent band (the battery intent answers with the last known level) passes less
+    /// — the band connects in ~1–2 s when it's in range.
     @discardableResult
-    func syncNow(disconnectWhenDone: Bool? = nil) async throws -> BandSyncer.HealthSyncOutcome {
+    func syncNow(disconnectWhenDone: Bool? = nil, trigger: SyncTrigger,
+                 connectTimeout: Duration = .seconds(25)) async throws -> BandSyncer.HealthSyncOutcome {
         if let inFlight {
-            log.debug("Sync already in flight — coalescing")
+            log.info("Sync requested (\(trigger.rawValue)) — joining the one in flight")
             return try await inFlight.value
         }
-        let task = Task { @MainActor in try await self.performSync(disconnectWhenDone: disconnectWhenDone) }
+        let task = Task { @MainActor in
+            try await self.performSync(disconnectWhenDone: disconnectWhenDone, trigger: trigger,
+                                       connectTimeout: connectTimeout)
+        }
         inFlight = task
         defer { inFlight = nil }
         return try await task.value
     }
 
-    private func performSync(disconnectWhenDone: Bool?) async throws -> BandSyncer.HealthSyncOutcome {
+    private func performSync(disconnectWhenDone: Bool?, trigger: SyncTrigger,
+                             connectTimeout: Duration) async throws -> BandSyncer.HealthSyncOutcome {
+        let started = ContinuousClock.now
+        log.info("Sync start (\(trigger.rawValue)) — \(DiagnosticLog.appContext())")
+        do {
+            let outcome = try await connectAndSync(disconnectWhenDone: disconnectWhenDone, connectTimeout: connectTimeout)
+            if outcome.deferredUntilUnlock {
+                log.info("Sync staged (\(trigger.rawValue)) in \(DiagnosticLog.elapsed(since: started)) — phone locked, \(outcome.sleepSessions) sleep report(s) kept locally until the unlock")
+                return outcome
+            }
+            log.info("Sync done (\(trigger.rawValue)) in \(DiagnosticLog.elapsed(since: started)) — \(outcome.sleepSessions) sleep report(s), \(outcome.healthSamplesWritten) sample(s) written")
+            return outcome
+        } catch {
+            log.error("Sync failed (\(trigger.rawValue)) after \(DiagnosticLog.elapsed(since: started)): \(DiagnosticLog.describe(error))")
+            throw error
+        }
+    }
+
+    private func connectAndSync(disconnectWhenDone: Bool?, connectTimeout: Duration) async throws -> BandSyncer.HealthSyncOutcome {
         // On a cold launch triggered by a task, the UI .onAppear may not have wired deps yet.
         try await awaitDependencies()
         guard let manager, let syncer, let id = syncer.currentDevice?.peripheralIdentifier else {
@@ -200,13 +232,29 @@ final class BackgroundSyncManager {
         // A link mid-handshake (the band re-deriving keys) was already up — this sync didn't open it,
         // so it mustn't be the one to drop it.
         let wasConnected = manager.connectionState.isConnected || manager.connectionState.isAuthInProgress
-        if !manager.connectionState.isConnected { try await manager.ensureConnected(identifier: id) }
+        log.info("Link \(String(describing: manager.connectionState)), last Health sync \(syncer.lastHealthSync?.logStamp ?? "never")")
+        if !manager.connectionState.isConnected { try await manager.ensureConnected(identifier: id, timeout: connectTimeout) }
 
         let shouldDisconnect = disconnectWhenDone ?? !wasConnected
         // userInitiated: false — releasing the active link must NOT stop auto-reconnect, or the band
         // could never wake us again. BandManager re-arms a standing connect on the resulting drop.
-        defer { if shouldDisconnect { manager.disconnect(userInitiated: false) } }
-        return try await syncer.syncToHealth()
+        do {
+            let outcome = try await syncer.syncToHealth()
+            if shouldDisconnect { await releaseLink(manager) }
+            return outcome
+        } catch {
+            if shouldDisconnect { manager.disconnect(userInitiated: false) }
+            throw error
+        }
+    }
+
+    /// A sync's last writes (file ACKs, then the calendar/weather pushes, which can return at once)
+    /// go out write-without-response and may still be queued in CoreBluetooth when it returns.
+    /// Cancelling the connection on the spot can drop them, and a file whose ACK never reached the
+    /// band is offered again on the next connection.
+    private func releaseLink(_ manager: BandManager) async {
+        try? await Task.sleep(for: .seconds(1))
+        manager.disconnect(userInitiated: false)
     }
 
     /// Called when the band authenticates while the app is in the background — e.g. CoreBluetooth
@@ -216,8 +264,11 @@ final class BackgroundSyncManager {
         #if canImport(UIKit)
         guard UIApplication.shared.applicationState == .background else { return }
         #endif
-        if let last = syncer?.lastHealthSync, Date().timeIntervalSince(last) < autoSyncStaleness {
-            log.debug("Background wake — Health synced recently, skipping")
+        // A locked-phone sync that only staged sleep counts too: at night the band can drop and
+        // reconnect every few minutes, and each wake would download the same sleep file again.
+        let lastRun = [syncer?.lastHealthSync, syncer?.lastStagedSync].compactMap { $0 }.max()
+        if let lastRun, Date().timeIntervalSince(lastRun) < autoSyncStaleness {
+            log.debug("Background wake — synced recently, skipping")
             return
         }
         let assertion = beginAssertion(name: "bg-wake-sync")
@@ -227,10 +278,30 @@ final class BackgroundSyncManager {
                 // Keep the link up (disconnectWhenDone: false): the band just reached us, so holding
                 // the connection is what gives constant background communication (push events: find
                 // phone, workout, weather). A later drop re-arms a standing connect on its own.
-                let outcome = try await syncNow(disconnectWhenDone: false)
+                let outcome = try await syncNow(disconnectWhenDone: false, trigger: .bleWake)
                 log.info("Background-wake sync done — \(outcome.healthSamplesWritten) samples")
             } catch {
-                log.error("Background-wake sync failed: \(error.localizedDescription)")
+                log.error("Background-wake sync failed: \(DiagnosticLog.describe(error))")
+            }
+        }
+    }
+
+    /// The phone was just unlocked, so Apple Health is readable again. First the nights the store kept
+    /// while it was locked go to Health (no band needed), then the sync a locked run left owed —
+    /// manual samples, workouts, daily details and every ACK. Only reachable while the app is alive
+    /// (iOS doesn't wake a suspended app for this); otherwise the next sync with the phone unlocked
+    /// does the same.
+    func protectedDataBecameAvailable() {
+        guard let syncer else { return }
+        let assertion = beginAssertion(name: "unlock-sync")
+        Task { @MainActor in
+            defer { endAssertion(assertion) }
+            await syncer.flushPendingSleep()
+            guard syncer.hasDeferredSync else { return }
+            do {
+                _ = try await syncNow(trigger: .unlock, connectTimeout: .seconds(10))
+            } catch {
+                log.error("Unlock sync failed: \(DiagnosticLog.describe(error))")
             }
         }
     }

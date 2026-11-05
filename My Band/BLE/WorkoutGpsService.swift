@@ -37,7 +37,7 @@ final class WorkoutGpsService: NSObject {
 
     private weak var bandManager: BandManager?
     private let locationManager = CLLocationManager()
-    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.myband", category: "GPS")
+    private let log = AppLogger(category: "GPS")
 
     private var gpsFixAcquired = false
     private var workoutStarted = false

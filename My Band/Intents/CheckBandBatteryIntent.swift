@@ -39,11 +39,11 @@ struct CheckBandBatteryIntent: AppIntent {
     /// not a sleep: the intent proceeds as soon as both responses arrive.
     private static let batteryRefreshWait: Duration = .seconds(3)
 
+    private static let connectWait: Duration = .seconds(10)
+
     private static let notificationID = "com.myband.lowbattery"
 
-    private static let log = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.myband", category: "BatteryIntent"
-    )
+    private static let log = AppLogger(category: "BatteryIntent")
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Int?> {
@@ -59,11 +59,14 @@ struct CheckBandBatteryIntent: AppIntent {
         defer { if !hadLiveLink { band.disconnect(userInitiated: false) } }
 
         // Best-effort: if the band is out of range, we still answer with the last known level
-        // instead of failing the shortcut (and therefore the whole automation).
+        // instead of failing the shortcut (and therefore the whole automation). Short wait for connection:
+        // within range the band authenticates in 1–2 s, and with the default 25 s ceiling each run with
+        // the band far away cost ~26 s.
         do {
-            _ = try await BackgroundSyncManager.shared.syncNow(disconnectWhenDone: false)
+            _ = try await BackgroundSyncManager.shared.syncNow(disconnectWhenDone: false, trigger: .batteryIntent,
+                                                               connectTimeout: Self.connectWait)
         } catch {
-            Self.log.error("Battery intent sync failed: \(error.localizedDescription)")
+            Self.log.error("Battery intent sync failed: \(DiagnosticLog.describe(error))")
         }
 
         await band.refreshBattery(timeout: Self.batteryRefreshWait)

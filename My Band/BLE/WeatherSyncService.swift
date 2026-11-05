@@ -28,7 +28,7 @@ final class WeatherSyncService: NSObject {
     private let homeAreaRadius: CLLocationDistance = 60_000
 
     private weak var bandManager: BandManager?
-    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.myband", category: "Weather")
+    private let log = AppLogger(category: "Weather")
 
     /// Conditions from the last successful band-sync weather fetch. Reused for workout metadata so
     /// the health sync doesn't fire its own Open-Meteo request per workout (which was timing out and

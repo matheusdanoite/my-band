@@ -259,7 +259,7 @@ final class BandManager: NSObject {
     /// Called for every DataUpload command (type=22) from the band — DataUploadService handles it.
     var onDataUploadCommand:     ((Xiaomi_Command) -> Void)?
 
-    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.myband", category: "BLE")
+    private let log = AppLogger(category: "BLE")
 
     // MARK: - Init
 
@@ -1370,12 +1370,24 @@ extension BandManager: CBCentralManagerDelegate {
         }
     }
 
+    private static func describe(_ state: CBPeripheralState) -> String {
+        switch state {
+        case .connected:     return "connected"
+        case .connecting:    return "connecting"
+        case .disconnecting: return "disconnecting"
+        case .disconnected:  return "disconnected"
+        @unknown default:    return "state \(state.rawValue)"
+        }
+    }
+
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
            let restored = peripherals.first {
             restored.delegate = self
             peripheral = restored
-            log.info("State restored: \(restored.name ?? restored.identifier.uuidString)")
+            // Connected here = iOS relaunched us for a BLE event; disconnected = something else
+            // launched the process (BGTask, intent) and the restore just hands back the peripheral.
+            log.info("State restored: \(restored.name ?? restored.identifier.uuidString), peripheral \(Self.describe(restored.state))")
         }
     }
 }

@@ -90,12 +90,13 @@ struct SleepReconciliationTests {
         #expect(naive.contains(phase("05:01", "05:13", .deep)))
         #expect(naive.contains(phase("05:01", "05:22", .deep)))
 
-        // Re-sanitizing the pool (what writeSleep now does) resolves it.
+        // Re-sanitizing the pool leaves no overlap. (File B's REM never reaches the pool: its own
+        // sanitize already dropped it, being inside B's longer deep phase.) Which report wins where
+        // they disagree is `HealthKitManager.mergedPhases`'s job — see SleepNightMergeTests.
         let pooled = SleepDetailsParser.sanitizeStages(naive)
         #expect(pooled == [
             phase("05:01", "05:13", .deep),
-            phase("05:13", "05:16", .rem),
-            phase("05:16", "05:22", .deep),
+            phase("05:13", "05:22", .deep),
         ])
     }
 

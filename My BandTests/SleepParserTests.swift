@@ -62,6 +62,61 @@ struct SleepParserTests {
         ])
     }
 
+    /// A type-16 summary followed by its type-17 stages, both stamped at `ts` — one re-scoring.
+    private func revision(ts: Int, _ stages: [(code: Int, minutes: Int)]) -> [UInt8] {
+        func total(_ code: Int) -> Int { stages.filter { $0.code == code }.reduce(0) { $0 + $1.minutes } }
+        let asleep = total(1) + total(2) + total(3)
+        let summary = [UInt8(0x10)] + be16(asleep) + be16(total(0)) + be16(total(1)) + be16(total(3)) + be16(total(2)) + [0x16, 0]
+        let words = stages.flatMap { be16(($0.code << 12) | $0.minutes) }
+        return [0xFB, 0xFA, 0xFC, 0xFF, 17] + le64(ts) + [0, 16] + be16(summary.count) + summary
+             + [0xFB, 0xFA, 0xFC, 0xFF, 17] + le64(ts) + [0, 17] + be16(words.count) + words
+    }
+
+    /// The band re-scores the whole night in each revision; only the last one is its verdict.
+    @Test func detailsParserKeepsOnlyTheLastRescoringOfTheNight() {
+        var b = fileId(version: 2, subtype: 0x08, detail: 0)
+        b += [0, 0x00, 0] + le32(bed) + le32(bed + 3 * 3600)     // padding, header, isAwake, bed, wake
+        b += revision(ts: bed, [(1, 60), (2, 30)])                // first scoring: light then deep
+        b += revision(ts: bed, [(3, 30), (1, 60), (0, 10)])       // re-scoring: REM, light, awake
+        b += crc
+
+        let parsed = SleepDetailsParser.parse(Data(b), meta: meta(b))
+
+        #expect(parsed.sessions.first?.phases == [
+            SleepPhase(startDate: at(0), endDate: at(1800), type: .rem),
+            SleepPhase(startDate: at(1800), endDate: at(5400), type: .light),
+            SleepPhase(startDate: at(5400), endDate: at(6000), type: .awake),
+        ])
+        #expect(parsed.stageRevisions == 2)
+        #expect(parsed.finalRevisionMatchesSummary == true)
+    }
+
+    @Test func detailsParserReadsARealNightAsTheBandScoredIt() {
+        let data = Fixtures.bytes(Fixtures.sleepDetailsV5ThreeRevisions)
+        guard let meta = XiaomiActivityFileMeta(Data(data.prefix(7))) else {
+            Issue.record("fixture id doesn't decode")
+            return
+        }
+        let parsed = SleepDetailsParser.parse(data, meta: meta)
+
+        #expect(parsed.awakeFlag == 0)
+        #expect(parsed.stageRevisions == 3)
+        #expect(parsed.finalRevisionMatchesSummary == true)
+        #expect(parsed.sessions.count == 1)
+        let session = parsed.sessions.first
+        #expect(session?.startDate == Date(timeIntervalSince1970: 1_790_827_200))   // 01:00 -03
+        #expect(session?.endDate == Date(timeIntervalSince1970: 1_790_850_840))     // 07:34 -03
+        let phases = session?.phases ?? []
+        func minutes(_ type: SleepPhaseType) -> Int {
+            Int(phases.filter { $0.type == type }.reduce(0) { $0 + $1.duration } / 60)
+        }
+        #expect(phases.count == 35)
+        #expect(minutes(.light) == 161)
+        #expect(minutes(.deep) == 125)
+        #expect(minutes(.rem) == 86)
+        #expect(minutes(.awake) == 22)
+    }
+
     @Test func detailsParserRejectsAnUnknownVersionInsteadOfGuessingOffsets() {
         let bytes = detailsFile(version: 6)
         let parsed = SleepDetailsParser.parse(Data(bytes), meta: meta(bytes))

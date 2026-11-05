@@ -66,6 +66,7 @@ struct My_BandApp: App {
         }
         .modelContainer(Self.sharedModelContainer)
         .onChange(of: scenePhase) { _, phase in
+            AppLogger(category: "App").info("Scene phase → \(String(describing: phase))")
             switch phase {
             case .background:
                 // Ensures a sync request is scheduled.

@@ -17,6 +17,7 @@ struct DashboardView: View {
     @State private var showCustomize = false
     @State private var showProfile = false
     @State private var showRawSensorCapture = false
+    @State private var showDiagnostics = false
 
     private var connected: Bool { band.connectionState.isConnected }
     /// Mid-handshake (or scanning) — a reconnect is already under way, so the button waits.
@@ -48,6 +49,10 @@ struct DashboardView: View {
                              icon: "person.text.rectangle", block: true) {
                         showProfile = true
                     }
+                    MBButton(title: "Log de diagnóstico", variant: .secondary, size: .lg,
+                             icon: "doc.text.magnifyingglass", block: true) {
+                        showDiagnostics = true
+                    }
                     Spacer(minLength: MB.Space.x6)
                     MBButton(title: "Forget band", variant: .ghost, size: .md, block: true,
                              action: onForget)
@@ -60,6 +65,7 @@ struct DashboardView: View {
         .sheet(isPresented: $showCustomize) { CustomizeView() }
         .sheet(isPresented: $showProfile) { ProfileView() }
         .sheet(isPresented: $showRawSensorCapture) { RawSensorCaptureView() }
+        .sheet(isPresented: $showDiagnostics) { DiagnosticsView() }
     }
 
     // MARK: Header
@@ -146,7 +152,7 @@ struct DashboardView: View {
             do {
                 // Funnel through the same coalesced entry point as the background/intent triggers,
                 // so a manual tap can't race a sync already in flight.
-                let outcome = try await BackgroundSyncManager.shared.syncNow()
+                let outcome = try await BackgroundSyncManager.shared.syncNow(trigger: .manual)
                 resultIsError = false
                 resultText = "Synced · \(outcome.healthSamplesWritten) samples in Apple Health"
             } catch {

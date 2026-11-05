@@ -37,8 +37,19 @@ final class SleepSession {
     var endDate: Date
     /// Encoded as binary via SwiftData's Codable support
     var phases: [SleepPhase]
+    /// Set once the night this report belongs to was written to Apple Health. A report fetched with
+    /// the phone locked stays false until the unlock flush (`BandSyncer.flushPendingSleep`).
     var healthKitSynced: Bool
     var rawDataHash: Int           // hash of the raw packet — used for deduplication
+
+    /// Header byte of the sleep file: 0 while the band still has the night open, 1 once it closed it.
+    var awakeFlag: Int?
+    /// When this exact report was last received from the band. With the night open, `endDate` keeps
+    /// pace with it; a gap between the two means the night stopped growing — the user woke up.
+    var fetchedAt: Date?
+    /// The file as the band sent it, kept so a parser fix can re-read nights already gone from the
+    /// band. Only the report reaching furthest into its night keeps it (each file is cumulative).
+    @Attribute(.externalStorage) var rawData: Data?
 
     var device: BandDevice?
 

@@ -26,7 +26,7 @@ final class HealthKitManager {
     static let shared = HealthKitManager()
 
     private let store = HKHealthStore()
-    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.myband", category: "Health")
+    private let log = AppLogger(category: "Health")
 
     private let syncVersion = 1
     /// Reconciled minutes newer than this are skipped: the iPhone pedometer may not have written
@@ -59,6 +59,8 @@ final class HealthKitManager {
     private let hrRecovery       = HKQuantityType(.heartRateRecoveryOneMinute)
     private let workoutType      = HKObjectType.workoutType()
     private let routeType        = HKSeriesType.workoutRoute()
+    private let hrvType          = HKQuantityType(.heartRateVariabilitySDNN)
+    private let heartbeatType    = HKSeriesType.heartbeat()
 
     /// MET: 1 kcal per kg per hour — the unit of physicalEffort and HKMetadataKeyAverageMETs.
     private static let metUnit = HKUnit.kilocalorie()
@@ -68,7 +70,8 @@ final class HealthKitManager {
         var types: Set<HKSampleType> = [sleepType, heartRate, stepCount, distance, activeEnergy, spo2,
          bodyTemp, restingHR, vo2Max, distanceCycling, distanceSwimming, swimStrokes,
          bodyMass, bodyMassIndex, height, workoutType, routeType,
-         physicalEffort, runningSpeed, runningStride, cyclingSpeedType, hrRecovery]
+         physicalEffort, runningSpeed, runningStride, cyclingSpeedType, hrRecovery,
+         hrvType, heartbeatType]
         if #available(iOS 18.0, *) {
             types.insert(HKQuantityType(.estimatedWorkoutEffortScore))
             types.insert(HKQuantityType(.distanceRowing))
@@ -96,37 +99,59 @@ final class HealthKitManager {
 
     // MARK: - Sleep
 
-    // A resync of a still-in-progress (or previously partial) night reports a superset of what an
-    // earlier sync already wrote, with different boundaries: each `SleepSession` is internally
-    // sanitized (`SleepDetailsParser.sanitizeStages`), but two sessions covering the same/overlapping
-    // window — whether from multiple files in one batch or from separate background-wake resyncs
-    // hours apart — never get sanitized *against each other*. The old per-phase/per-inBed identifier
-    // also baked in `endDate`, which is exactly what changes between resyncs of an ongoing night, so
+    // A night reaches us as several reports. A resync of a still-in-progress (or previously partial)
+    // night comes back as another file with the same bedtime and different boundaries, and BandSyncer
+    // adds every stored report overlapping the batch (`withStoredReports`). Each report is sanitized
+    // on its own (`SleepDetailsParser.sanitizeStages`), never against the others, and the old
+    // per-phase/per-inBed identifier baked in `endDate` — exactly what changes between resyncs — so
     // HealthKit's sync-identifier dedup (see header comment) never recognized them as updates.
-    // Fixed by: (1) pooling and re-sanitizing phases across every session whose window overlaps,
-    // (2) keying identifiers on the phase's own start + type only (stable across a growing end),
-    // and (3) clearing whatever this app already wrote for the window as a backstop, so a
-    // reclassified stage (same start, different type — not caught by a stable id alone) still gets
-    // superseded instead of sitting alongside the old one.
+    // Per night, then: (1) merge every overlapping report, the one reaching furthest into the night
+    // winning where they disagree (`mergedPhases`); (2) key identifiers on the phase's own start +
+    // type only (stable across a growing end); and (3) clear whatever this app already wrote for the
+    // window first, so a reclassified stage (same start, different type — not caught by a stable id
+    // alone) is superseded instead of sitting alongside the old one. Because of (3) the batch must
+    // hold everything known about the night: a partial report written alone erases the rest of it.
     func writeSleep(_ sessions: [SleepSession]) async throws -> Int {
-        guard !sessions.isEmpty else { return 0 }
-        var samples: [HKSample] = []
-        for group in Self.groupOverlapping(sessions) {
+        try await writeNights(Self.groupOverlapping(sessions), keepingRicherHealthNights: false).written
+    }
+
+    /// One-time history repair (`BandSyncer.repairSleepHistoryOnce`): every stored night rewritten
+    /// through the merge, except one Apple Health already holds more of than its stored reports
+    /// (`healthHoldsMore`) — a repair must never shrink a night.
+    func repairSleep(from sessions: [SleepSession]) async throws -> (nights: Int, kept: Int, written: Int) {
+        try await writeNights(Self.groupOverlapping(sessions), keepingRicherHealthNights: true)
+    }
+
+    /// Each night is cleared and saved on its own, so a failure loses at most the night being written —
+    /// whose reports are still un-ACKed on the band (sync) or in the store (repair).
+    private func writeNights(_ nights: [[SleepSession]],
+                             keepingRicherHealthNights: Bool) async throws -> (nights: Int, kept: Int, written: Int) {
+        var result = (nights: 0, kept: 0, written: 0)
+        for group in nights {
             guard let start = group.map(\.startDate).min(), let end = group.map(\.endDate).max(),
                   end > start else { continue }
+            let phases = Self.mergedPhases(group)
 
-            try await deleteExistingSleep(overlapping: start, to: end)
+            if keepingRicherHealthNights {
+                let existing = try await ownSleepSamples(overlapping: start, to: end).map {
+                    (start: $0.startDate, end: $0.endDate, asleep: Self.asleepValues.contains($0.value))
+                }
+                if let reason = Self.healthHoldsMore(existing, than: phases, from: start, to: end) {
+                    log.info("Sleep repair kept night \(start.logStamp) → \(end.logStamp) as is — \(reason)")
+                    result.kept += 1
+                    continue
+                }
+            }
+
+            let cleared = try await deleteExistingSleep(overlapping: start, to: end)
 
             // Enclosing in-bed window so Apple Health reports "Time in Bed" alongside the stages.
-            let inBedId = "mb-inbed-\(Int(start.timeIntervalSince1970))"
-            samples.append(HKCategorySample(
+            var samples: [HKSample] = [HKCategorySample(
                 type: sleepType, value: HKCategoryValueSleepAnalysis.inBed.rawValue,
                 start: start, end: end,
-                metadata: syncMetadata(inBedId)
-            ))
-
-            let sanitized = SleepDetailsParser.sanitizeStages(group.flatMap(\.phases))
-            for phase in sanitized {
+                metadata: syncMetadata("mb-inbed-\(Int(start.timeIntervalSince1970))")
+            )]
+            for phase in phases {
                 guard phase.endDate > phase.startDate, let value = Self.sleepValue(phase.type) else { continue }
                 let id = "mb-sleep-\(Int(phase.startDate.timeIntervalSince1970))-\(phase.type.rawValue)"
                 samples.append(HKCategorySample(
@@ -135,8 +160,11 @@ final class HealthKitManager {
                     metadata: syncMetadata(id)
                 ))
             }
+            result.written += try await save(samples)
+            result.nights += 1
+            log.info("Sleep night \(start.logStamp) → \(end.logStamp): \(group.count) report(s) merged into \(phases.count) phase(s), \(cleared) old sample(s) cleared")
         }
-        return try await save(samples)
+        return result
     }
 
     /// Groups sessions whose `[startDate, endDate]` windows transitively overlap — incremental
@@ -155,15 +183,277 @@ final class HealthKitManager {
         return groups
     }
 
-    private func deleteExistingSleep(overlapping start: Date, to end: Date) async throws {
-        let mine = HKQuery.predicateForObjects(from: [HKSource.default()])
-        let time = HKQuery.predicateForSamples(withStart: start, end: end, options: [])
-        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [mine, time])
+    /// One night's phases across all of its reports. Where reports overlap, the one reaching furthest
+    /// into the night wins — the band re-scores stages as the night goes on, so what a mid-night file
+    /// said about 1 a.m. yields to the morning file — and earlier reports only fill time the later
+    /// ones don't cover. Public so tests can validate it independent of HealthKit.
+    static func mergedPhases(_ group: [SleepSession]) -> [SleepPhase] {
+        let byReach = group.sorted {
+            $0.endDate != $1.endDate ? $0.endDate > $1.endDate : $0.startDate < $1.startDate
+        }
+        var covered: [(start: Date, end: Date)] = []
+        var merged: [SleepPhase] = []
+        for report in byReach {
+            guard report.endDate > report.startDate else { continue }
+            // The same ±6 h slack the parsers allow: a stage stamped hours away from its report's
+            // window is a misread, and it would claim that time from every other report of the night.
+            let plausible = report.startDate.addingTimeInterval(-6 * 3600) ... report.endDate.addingTimeInterval(6 * 3600)
+            let phases = SleepDetailsParser.sanitizeStages(report.phases.filter {
+                plausible.contains($0.startDate) && plausible.contains($0.endDate)
+            })
+            for phase in phases {
+                merged += uncovered(phase, by: covered)
+            }
+            covered.append((start: min(report.startDate, phases.first?.startDate ?? report.startDate),
+                            end: max(report.endDate, phases.last?.endDate ?? report.endDate)))
+        }
+        return merged.sorted { $0.startDate < $1.startDate }
+    }
+
+    /// The parts of `phase` outside every window in `covered`.
+    private static func uncovered(_ phase: SleepPhase, by covered: [(start: Date, end: Date)]) -> [SleepPhase] {
+        var pieces = [phase]
+        for window in covered {
+            var remaining: [SleepPhase] = []
+            for piece in pieces {
+                guard window.start < piece.endDate, window.end > piece.startDate else {
+                    remaining.append(piece)
+                    continue
+                }
+                if piece.startDate < window.start {
+                    remaining.append(SleepPhase(startDate: piece.startDate, endDate: window.start, type: piece.type))
+                }
+                if window.end < piece.endDate {
+                    remaining.append(SleepPhase(startDate: window.end, endDate: piece.endDate, type: piece.type))
+                }
+            }
+            pieces = remaining
+        }
+        return pieces
+    }
+
+    private static let asleepValues = Set(HKCategoryValueSleepAnalysis.allAsleepValues.map(\.rawValue))
+
+    /// Why rewriting a night from its stored reports would lose data — nil if it wouldn't. Apple
+    /// Health's copy (this app's own samples) reaching past the reports' window, or holding clearly
+    /// more time asleep than their merge, was written from a report the store no longer has: lost to
+    /// the old 1-byte hash collisions, or to a store reset after corruption. The tolerances absorb the
+    /// band re-scoring stages between reports. Public so tests can validate it independent of HealthKit.
+    static func healthHoldsMore(_ existing: [(start: Date, end: Date, asleep: Bool)], than phases: [SleepPhase],
+                                from start: Date, to end: Date) -> String? {
+        guard let healthStart = existing.map({ $0.start }).min(),
+              let healthEnd = existing.map({ $0.end }).max() else { return nil }
+        let edgeTolerance: TimeInterval = 5 * 60
+        if healthStart < start.addingTimeInterval(-edgeTolerance) {
+            return "Apple Health starts at \(healthStart.logStamp), the stored reports at \(start.logStamp)"
+        }
+        if healthEnd > end.addingTimeInterval(edgeTolerance) {
+            return "Apple Health ends at \(healthEnd.logStamp), the stored reports at \(end.logStamp)"
+        }
+        let healthAsleep = coveredDuration(existing.filter { $0.asleep }.map { (start: $0.start, end: $0.end) })
+        let storedAsleep = coveredDuration(phases.filter { $0.type != .awake }.map { (start: $0.startDate, end: $0.endDate) })
+        if healthAsleep > storedAsleep + 15 * 60 {
+            return "Apple Health has \(Int(healthAsleep / 60)) min asleep, the stored reports \(Int(storedAsleep / 60))"
+        }
+        return nil
+    }
+
+    /// Length of the union of `intervals`: overlapping samples — duplicates left by older builds — count once.
+    private static func coveredDuration(_ intervals: [(start: Date, end: Date)]) -> TimeInterval {
+        var total: TimeInterval = 0
+        var run: (start: Date, end: Date)?
+        for interval in intervals.sorted(by: { $0.start < $1.start }) {
+            if let current = run, interval.start <= current.end {
+                run = (start: current.start, end: max(current.end, interval.end))
+            } else {
+                if let current = run { total += current.end.timeIntervalSince(current.start) }
+                run = interval
+            }
+        }
+        if let current = run { total += current.end.timeIntervalSince(current.start) }
+        return total
+    }
+
+    private func ownSleepSamples(overlapping start: Date, to end: Date) async throws -> [HKCategorySample] {
+        let descriptor = HKSampleQueryDescriptor(
+            predicates: [.categorySample(type: sleepType, predicate: ownSleepPredicate(start, end))],
+            sortDescriptors: []
+        )
+        return try await descriptor.result(for: store)
+    }
+
+    private func ownSleepPredicate(_ start: Date, _ end: Date) -> NSPredicate {
+        NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForObjects(from: [HKSource.default()]),
+            HKQuery.predicateForSamples(withStart: start, end: end, options: []),
+        ])
+    }
+
+    private func deleteExistingSleep(overlapping start: Date, to end: Date) async throws -> Int {
         do {
-            _ = try await store.deleteObjects(of: sleepType, predicate: predicate)
+            return try await store.deleteObjects(of: sleepType, predicate: ownSleepPredicate(start, end))
         } catch let error as HKError where error.code == .errorNoData {
             // Nothing of ours in the window yet — a night's first write. Letting this throw would
             // fail the save that follows, every time a new night shows up.
+            return 0
+        }
+    }
+
+    // MARK: - Sleep history rebuild (from Apple Health)
+    //
+    // Nights written before the stable identifiers sit in Apple Health with every re-sync stacked on the
+    // previous ones — several in-bed samples, overlapping stages, time asleep counted several times over —
+    // and for everything older than the local store (recreated on hardware on 2026-09-09) Apple Health
+    // holds the only copy. So the rebuild reads it back: this app's own sleep samples, grouped into
+    // nights by transitive overlap, and every stacked night collapsed to one in-bed sample plus
+    // non-overlapping stages.
+    //
+    // Which stage wins an overlap can't be recovered exactly: HealthKit doesn't expose which re-sync
+    // wrote a sample. `collapsedPhases` puts the shortest sample first at each start and lets the rest
+    // only extend past it. Against a real export, on the 12 nights whose creation times still separate
+    // the re-syncs, that matched the furthest-reaching-report rule (`mergedPhases`) on 92% of minutes —
+    // the best of five rules tried (longest first 90%, latest end wins 89%). Time covered is exact.
+    //
+    // Nights spanning more than 16 h are left as they are and logged: blocks that long aren't only
+    // duplication, and collapsing them would still be wrong.
+
+    struct StoredSleepSample {
+        let start: Date
+        let end: Date
+        /// `HKCategoryValueSleepAnalysis` raw value.
+        let value: Int
+    }
+
+    struct SleepRebuildResult {
+        var rebuilt = 0
+        var replaced = 0
+        var written = 0
+        var keptLong = 0
+        var clean = 0
+    }
+
+    static let rebuildMaxSpan: TimeInterval = 16 * 3600
+    /// Above the version every normal write uses, so a rebuilt sample sharing an identifier with an
+    /// original replaces it in the save itself.
+    private static let rebuildSyncVersion = 2
+
+    func rebuildSleepHistoryFromHealth() async throws -> SleepRebuildResult {
+        let descriptor = HKSampleQueryDescriptor(
+            predicates: [.categorySample(type: sleepType, predicate: HKQuery.predicateForObjects(from: [HKSource.default()]))],
+            sortDescriptors: []
+        )
+        let all = try await descriptor.result(for: store)
+        var result = SleepRebuildResult()
+
+        for night in Self.overlapGroups(all, start: { $0.startDate }, end: { $0.endDate }) {
+            let samples = night.map { StoredSleepSample(start: $0.startDate, end: $0.endDate, value: $0.value) }
+            guard Self.needsRebuild(samples),
+                  let start = samples.map(\.start).min(), let end = samples.map(\.end).max() else {
+                result.clean += 1
+                continue
+            }
+            let span = end.timeIntervalSince(start)
+            guard span <= Self.rebuildMaxSpan else {
+                log.warning("Sleep rebuild left \(start.logStamp) → \(end.logStamp) as is — \(String(format: "%.1f", span / 3600)) h, more than duplication explains")
+                result.keptLong += 1
+                continue
+            }
+
+            let phases = Self.collapsedPhases(samples)
+            var rebuilt: [HKSample] = [HKCategorySample(
+                type: sleepType, value: HKCategoryValueSleepAnalysis.inBed.rawValue, start: start, end: end,
+                metadata: syncMetadata("mb-inbed-\(Int(start.timeIntervalSince1970))", version: Self.rebuildSyncVersion)
+            )]
+            for phase in phases {
+                guard let value = Self.sleepValue(phase.type) else { continue }
+                rebuilt.append(HKCategorySample(
+                    type: sleepType, value: value.rawValue, start: phase.startDate, end: phase.endDate,
+                    metadata: syncMetadata("mb-sleep-\(Int(phase.startDate.timeIntervalSince1970))-\(phase.type.rawValue)",
+                                           version: Self.rebuildSyncVersion)
+                ))
+            }
+
+            // Save first: Apple Health is the only copy of these nights, so a failed save must not come
+            // after the originals are gone.
+            result.written += try await save(rebuilt)
+            let rebuiltIds = Set(rebuilt.compactMap { $0.metadata?[HKMetadataKeySyncIdentifier] as? String })
+            let superseded = night.filter { original in
+                !rebuiltIds.contains(original.metadata?[HKMetadataKeySyncIdentifier] as? String ?? "")
+            }
+            if !superseded.isEmpty { try await store.delete(superseded) }
+            result.replaced += night.count
+            result.rebuilt += 1
+
+            let summed: TimeInterval = samples.filter { Self.asleepValues.contains($0.value) }
+                .reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
+            let asleep: TimeInterval = phases.filter { $0.type != .awake }.reduce(0) { $0 + $1.duration }
+            log.info("Sleep rebuild \(start.logStamp) → \(end.logStamp): \(night.count) sample(s) → \(rebuilt.count), asleep \(String(format: "%.1f", summed / 3600)) h summed → \(String(format: "%.1f", asleep / 3600)) h")
+        }
+        return result
+    }
+
+    /// Groups by transitive overlap: an item joins the current group when it starts before the group's
+    /// furthest end. Public so tests can validate it independent of HealthKit.
+    static func overlapGroups<T>(_ items: [T], start: (T) -> Date, end: (T) -> Date) -> [[T]] {
+        var groups: [[T]] = []
+        var reach = Date.distantPast
+        for item in items.sorted(by: { start($0) < start($1) }) {
+            if !groups.isEmpty, start(item) < reach {
+                groups[groups.count - 1].append(item)
+                reach = max(reach, end(item))
+            } else {
+                groups.append([item])
+                reach = end(item)
+            }
+        }
+        return groups
+    }
+
+    /// More than one in-bed sample, or stages overlapping each other: a night stacked by re-syncs.
+    static func needsRebuild(_ night: [StoredSleepSample]) -> Bool {
+        let inBed = HKCategoryValueSleepAnalysis.inBed.rawValue
+        if night.filter({ $0.value == inBed }).count > 1 { return true }
+        var reach = Date.distantPast
+        for stage in night.filter({ $0.value != inBed }).sorted(by: { $0.start < $1.start }) {
+            if stage.start < reach { return true }
+            reach = max(reach, stage.end)
+        }
+        return false
+    }
+
+    /// One non-overlapping timeline from a stacked night: at each start the shortest sample goes first,
+    /// later ones only extend past what's already kept, and touching pieces of the same stage are
+    /// joined. Public so tests can validate it independent of HealthKit.
+    static func collapsedPhases(_ night: [StoredSleepSample]) -> [SleepPhase] {
+        let stages = night.compactMap { sample -> SleepPhase? in
+            guard sample.end > sample.start, let type = phaseType(sample.value) else { return nil }
+            return SleepPhase(startDate: sample.start, endDate: sample.end, type: type)
+        }.sorted {
+            if $0.startDate != $1.startDate { return $0.startDate < $1.startDate }
+            if $0.duration != $1.duration { return $0.duration < $1.duration }
+            return $0.type.rawValue < $1.type.rawValue
+        }
+        var timeline: [SleepPhase] = []
+        for stage in stages {
+            let from = max(stage.startDate, timeline.last?.endDate ?? stage.startDate)
+            guard stage.endDate > from else { continue }
+            if let last = timeline.last, last.endDate == from, last.type == stage.type {
+                timeline[timeline.count - 1].endDate = stage.endDate
+            } else {
+                timeline.append(SleepPhase(startDate: from, endDate: stage.endDate, type: stage.type))
+            }
+        }
+        return timeline
+    }
+
+    private static func phaseType(_ value: Int) -> SleepPhaseType? {
+        guard let analysis = HKCategoryValueSleepAnalysis(rawValue: value) else { return nil }
+        switch analysis {
+        case .awake:                          return .awake
+        case .asleepCore, .asleepUnspecified: return .light
+        case .asleepDeep:                     return .deep
+        case .asleepREM:                      return .rem
+        default:                              return nil
         }
     }
 
@@ -251,6 +541,94 @@ final class HealthKitManager {
             }
         }
         return try await save(samples)
+    }
+
+    // MARK: - Heart rate variability (sleep beat-to-beat intervals)
+    //
+    // Per block of the band's beat-to-beat intervals (see HeartRateVariability): one heartbeat series
+    // with every beat, and one SDNN value per clean minute. Both types are optional enrichment, so a
+    // denied one is skipped (canShare) instead of failing the batch.
+    //
+    // Re-syncs: each report of a night repeats the blocks of the ones before it. SDNN values carry a
+    // sync identifier per minute and are replaced in place. A heartbeat series is built, not saved
+    // whole, so the sync-identifier replacement isn't something to lean on — identifiers already in
+    // Health are looked up and their blocks skipped.
+
+    /// Bump when HeartRateVariability changes how a minute's value is computed: a higher version
+    /// replaces the SDNN values already in Health on the next write of their nights.
+    private let hrvVersion = 1
+
+    struct HRVWriteResult {
+        var minuteValues = 0
+        var seriesWritten = 0
+        var seriesAlreadyThere = 0
+        var medianSDNN: Double?
+    }
+
+    func writeHeartRateVariability(_ blocks: [BeatWindow]) async throws -> HRVWriteResult {
+        var result = HRVWriteResult()
+        let blocks = HeartRateVariability.distinct(blocks)
+        guard !blocks.isEmpty else { return result }
+
+        if canShare(hrvType) {
+            let minutes = blocks.flatMap(HeartRateVariability.minuteSDNN)
+            let ms = HKUnit.secondUnit(with: .milli)
+            let samples = minutes.map {
+                quantity(hrvType, ms, $0.sdnnMs, start: $0.start, end: $0.end,
+                         id: "mb-hrv-\(Int($0.start.timeIntervalSince1970))", version: hrvVersion)
+            }
+            result.minuteValues = try await save(samples)
+            let sorted = minutes.map(\.sdnnMs).sorted()
+            if !sorted.isEmpty { result.medianSDNN = sorted[sorted.count / 2] }
+        }
+
+        if canShare(heartbeatType) {
+            let ids = blocks.map(Self.heartbeatSeriesID)
+            let present = try await existingSyncIdentifiers(of: heartbeatType, among: ids)
+            for (block, id) in zip(blocks, ids) {
+                if present.contains(id) { result.seriesAlreadyThere += 1; continue }
+                try await saveHeartbeatSeries(block, id: id)
+                result.seriesWritten += 1
+            }
+        }
+        return result
+    }
+
+    /// Milliseconds: blocks are ~605 s apart, but the identifier has to be exact for the lookup.
+    static func heartbeatSeriesID(_ block: BeatWindow) -> String {
+        "mb-beats-\(Int64((block.start.timeIntervalSince1970 * 1000).rounded()))"
+    }
+
+    /// The builder takes offsets that must be strictly positive, so the series starts one band unit
+    /// (10 ms) before its first beat. A block longer than the builder's limit is split in parts that
+    /// carry their own identifiers; a part starts with a gap, since its first interval is unknown.
+    private func saveHeartbeatSeries(_ block: BeatWindow, id: String) async throws {
+        let lead: TimeInterval = 0.01
+        let beats = HeartRateVariability.beats(block)
+        let limit = max(2, Int(HKHeartbeatSeriesBuilder.maximumCount))
+        for (part, chunkStart) in stride(from: 0, to: beats.count, by: limit).enumerated() {
+            let chunk = beats[chunkStart ..< min(beats.count, chunkStart + limit)]
+            guard let first = chunk.first else { continue }
+            let seriesStart = block.start.addingTimeInterval(first.offset - lead)
+            let builder = HKHeartbeatSeriesBuilder(healthStore: store, device: .local(), start: seriesStart)
+            for (i, beat) in chunk.enumerated() {
+                try await builder.addHeartbeat(at: beat.offset - first.offset + lead,
+                                               precededByGap: i == 0 || beat.precededByGap)
+            }
+            try await builder.addMetadata(syncMetadata(part == 0 ? id : "\(id)-\(part)"))
+            _ = try await builder.finishSeries()
+        }
+    }
+
+    private func existingSyncIdentifiers(of type: HKSampleType, among ids: [String]) async throws -> Set<String> {
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForObjects(from: [HKSource.default()]),
+            HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeySyncIdentifier, allowedValues: ids),
+        ])
+        let descriptor = HKSampleQueryDescriptor(predicates: [.sample(type: type, predicate: predicate)],
+                                                 sortDescriptors: [])
+        let found = try await descriptor.result(for: store)
+        return Set(found.compactMap { $0.metadata?[HKMetadataKeySyncIdentifier] as? String })
     }
 
     // MARK: - Reconciled activity (steps / distance / active energy)

@@ -31,7 +31,13 @@ import Foundation
 //   [17..]   payload (dataLen bytes, big-endian fields)
 //
 // Stage packet types: 16 = summary, 17 = stages. Types 2/3/9/12/13/14/15 are flag-only
-// (no payload). Type 1 (RR intervals) is ignored — HR comes from the header HR section.
+// (no payload). Type 1 is beat-to-beat (RR) intervals: ts in milliseconds = the block's first beat,
+// then one u8 per interval in 10 ms units, always a multiple of 4 (25 Hz PPG, 40 ms steps); a block
+// spans ~600 s and the next starts ~605 s later. Confirmed on the two hardware nights of
+// 2026-10-01…03: the HR they imply matches the header HR section within ~1 bpm per block when anchored
+// at the block's start (~2.3 bpm anchored at its end). Each block keeps its own ts — GadgetBridge
+// chains the beats across blocks and drifts up to 30 s before resyncing. HR still comes from the
+// header HR section. A file carries one 16 + 17 pair per re-scoring of the night; see parse.
 //
 // Type 17 entries are UInt16 BE: bits[15:12] = stage, bits[11:0] = duration_minutes of
 // that stage. The stage starts at the running cursor; the cursor advances by the duration.
@@ -41,6 +47,34 @@ struct ParsedSleep {
     var sessions: [SleepSession] = []
     var heartRates: [(date: Date, bpm: Int)] = []
     var spo2: [(date: Date, pct: Int)] = []
+
+    // Header as read. The awake byte reads 0 while the night is still open and 1 once the band has
+    // closed it (hardware, 2026-10-01: 0 at five syncs through 13:31 with wake frozen at 12:37, 1 at
+    // 15:17) — GetSleepStateIntent leans on it.
+    var bedTime = 0
+    var wakeupTime = 0
+    var awakeFlag: Int?
+    var packetTypes: [Int] = []
+    /// Type-17 packets that carried stages — each one a full re-scoring of the night so far.
+    var stageRevisions = 0
+    /// Whether the re-scoring kept adds up to the type-16 summary sent just before it; nil without one.
+    var finalRevisionMatchesSummary: Bool?
+    /// Whether the header announced a SpO₂ section at all (nil for layouts without the bitmask). Every
+    /// hardware night so far had none — a band setting, not a parse, would be the first suspect.
+    var hasSpO2Section: Bool?
+    /// Beat-to-beat intervals recorded during the night (type-1 packets), one block per packet.
+    var beatWindows: [BeatWindow] = []
+
+    /// Stage-packet types in the order first seen, with counts — e.g. "1×42 17×3 16×1".
+    var packetSummary: String {
+        var counts: [Int: Int] = [:]
+        var order: [Int] = []
+        for type in packetTypes {
+            if counts[type] == nil { order.append(type) }
+            counts[type, default: 0] += 1
+        }
+        return order.map { "\($0)×\(counts[$0] ?? 0)" }.joined(separator: " ")
+    }
 }
 
 enum SleepDetailsParser {
@@ -69,9 +103,11 @@ enum SleepDetailsParser {
         for _ in 0 ..< headerSize { header.append(r.u8()) }
 
         var headerIdx = 0
-        _ = r.u8(); headerIdx += 1             // isAwake
+        result.awakeFlag = Int(r.u8()); headerIdx += 1   // isAwake
         let bedTime = Int(r.i32()); headerIdx += 1
         let wakeupTime = Int(r.i32()); headerIdx += 1
+        result.bedTime = bedTime
+        result.wakeupTime = wakeupTime
 
         if version >= 4 {
             if validData(header, headerIdx) { _ = r.u8() }   // sleepQuality
@@ -93,6 +129,7 @@ enum SleepDetailsParser {
         headerIdx += 1
 
         // SpO₂ samples during sleep.
+        result.hasSpO2Section = validData(header, headerIdx)
         if validData(header, headerIdx) {
             result.spo2 = readSamples(r, version: version, bedTime: bedTime, range: 50...100)
                 .map { (date: $0.0, pct: $0.1) }
@@ -117,8 +154,19 @@ enum SleepDetailsParser {
         let sessionStart = Date(timeIntervalSince1970: TimeInterval(bedTime))
         let sessionEnd   = Date(timeIntervalSince1970: TimeInterval(wakeupTime))
 
-        var stages: [SleepPhase] = []
+        // The band appends a summary + stages pair every time it re-scores the night, each covering
+        // the whole night from its bedtime — not just the stretch since the previous pair — and it
+        // re-classifies earlier stretches as it goes (a hardware night disagreed with its first
+        // scoring on 13% of its minutes). Only the last pair per start is the band's verdict; each
+        // summary matched the stages right after it to the minute.
+        var revisions: [Int64: [SleepPhase]] = [:]
         var summaryMinutes: (deep: Int, light: Int, rem: Int, wake: Int)?
+        var lastStagesSummary: (deep: Int, light: Int, rem: Int, wake: Int)?
+        var lastStagesTs: Int64?
+        var beatBlocks: [Int64: BeatWindow] = [:]
+        // Stage packets carry their own timestamps; one far outside the night is a misread, and
+        // widening the session to enclose it would make writeSleep clear everything in between.
+        let plausible = sessionStart.addingTimeInterval(-6 * 3600) ... sessionEnd.addingTimeInterval(6 * 3600)
 
         while r.remaining >= stagePacketLen {
             guard scanForStageMagic(r) else { break }   // leaves cursor after the 4 magic bytes
@@ -129,6 +177,7 @@ enum SleepDetailsParser {
             _ = r.u8()                          // parity
             let type = Int(r.u8())
             let dataLen = (Int(r.u8()) << 8) | Int(r.u8())   // big-endian
+            result.packetTypes.append(type)
 
             // Flag-only packets: the dataLen bytes are flags, no payload follows.
             if [0x2, 0x3, 0x9, 0xC, 0xD, 0xE, 0xF].contains(type) { continue }
@@ -136,25 +185,47 @@ enum SleepDetailsParser {
             let payload = r.read(dataLen)
 
             switch type {
+            case 1:
+                // Milliseconds; a block stamped outside the plausible night is a misread.
+                let start = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
+                guard plausible.contains(start), !payload.isEmpty else { break }
+                beatBlocks[ts] = BeatWindow(start: start, intervalsMs: payload.map { Int($0) * 10 })
             case 16: summaryMinutes = parseSleepSummary(payload)
-            case 17: stages.append(contentsOf: parseSleepStages(payload, base: TimeInterval(ts)))
-            default: break                      // type 1 (RR intervals) etc. — ignored
+            case 17:
+                // An empty one is a stray (seen stamped days before the night) — it re-scores nothing.
+                let phases = parseSleepStages(payload, base: TimeInterval(ts))
+                guard !phases.isEmpty else { break }
+                revisions[ts] = phases
+                result.stageRevisions += 1
+                lastStagesTs = ts
+                lastStagesSummary = summaryMinutes
+            default: break                      // type 1 etc. — not decoded
             }
         }
 
-        if !stages.isEmpty {
-            let sanitized = sanitizeStages(stages)
-            result.sessions = [SleepSession(startDate: sessionStart, endDate: sessionEnd,
-                                            phases: sanitized, rawDataHash: hashOf(data))]
-        } else if let s = summaryMinutes {
-            let phases = buildPhasesFromSummary(start: sessionStart,
-                                                deepMin: s.deep, lightMin: s.light,
-                                                remMin: s.rem, wakeMin: s.wake)
-            if !phases.isEmpty {
-                result.sessions = [SleepSession(startDate: sessionStart, endDate: sessionEnd,
-                                                phases: phases, rawDataHash: hashOf(data))]
+        if let ts = lastStagesTs, let summary = lastStagesSummary, let phases = revisions[ts] {
+            func minutes(_ type: SleepPhaseType) -> Int {
+                Int(phases.filter { $0.type == type }.reduce(0) { $0 + $1.duration } / 60)
             }
+            result.finalRevisionMatchesSummary = minutes(.deep) == summary.deep && minutes(.light) == summary.light
+                && minutes(.rem) == summary.rem && minutes(.awake) == summary.wake
         }
+        let stages = revisions.keys.sorted().flatMap { revisions[$0] ?? [] }
+        result.beatWindows = beatBlocks.keys.sorted().compactMap { beatBlocks[$0] }
+
+        let sanitized = sanitizeStages(stages.filter { plausible.contains($0.startDate) && plausible.contains($0.endDate) })
+        let phases = sanitized.isEmpty
+            ? summaryMinutes.map { buildPhasesFromSummary(start: sessionStart, deepMin: $0.deep, lightMin: $0.light,
+                                                         remMin: $0.rem, wakeMin: $0.wake) } ?? []
+            : sanitized
+        guard let first = phases.first, let last = phases.last else { return result }
+
+        // Widened to enclose every phase, as in SleepStagesParser: the window becomes the in-bed sample
+        // and the range writeSleep clears, so a reclassified phase outside it would survive a rewrite
+        // next to its replacement.
+        result.sessions = [SleepSession(startDate: min(sessionStart, first.startDate),
+                                        endDate: max(sessionEnd, last.endDate),
+                                        phases: phases, rawDataHash: hashOf(data))]
         return result
     }
 
@@ -306,7 +377,7 @@ enum SleepDetailsParser {
     }
 
     /// FNV-1a 64-bit over the whole file. The previous XOR-fold collapsed to a single byte
-    /// (0–255), so distinct nights collided and `persistIfNew` silently dropped legitimate new
+    /// (0–255), so distinct nights collided and the store's dedup silently dropped legitimate new
     /// sessions from SwiftData (Apple Health was unaffected — it always rewrites).
     fileprivate static func hashOf(_ data: Data) -> Int {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
@@ -352,6 +423,8 @@ enum SleepStagesParser {
         r.skip(3)
         let deep = Int(r.i16()), light = Int(r.i16()), rem = Int(r.i16()), wake = Int(r.i16())
         r.skip(1)
+        result.bedTime = bedTime
+        result.wakeupTime = wakeupTime
 
         guard bedTime > 0, wakeupTime > bedTime, sleepDuration > 0 else { return result }
 
