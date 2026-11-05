@@ -56,8 +56,8 @@ final class CalendarSyncService {
 
     private func pushLanguage() {
         // Locale.current reflects the app's resolved locale, which may fall back to English
-        // when the app has no Portuguese localization — even if the user's preferred language
-        // is pt-BR. Locale.preferredLanguages.first always returns the user's actual choice.
+        // when the app has no localization for the user's language — even if the user's preferred
+        // language is something else (e.g. pt-BR). Locale.preferredLanguages.first always returns the user's actual choice.
         let raw    = Locale.preferredLanguages.first ?? "en-US"
         let locale = Locale(identifier: raw)
         let lang   = locale.language.languageCode?.identifier ?? "en"
@@ -151,7 +151,7 @@ final class CalendarSyncService {
         var sent = 0
         for reminder in reminders.prefix(maxReminders) {
             guard let due = reminder.dueDateComponents?.date else { continue }
-            let details = XiaomiProto.reminderDetails(date: due, title: reminder.title ?? "Lembrete")
+            let details = XiaomiProto.reminderDetails(date: due, title: reminder.title ?? "Reminder")
             bandManager?.sendEncryptedCommand(protoBytes: XiaomiProto.reminderCreateCommand(details))
             sent += 1
         }

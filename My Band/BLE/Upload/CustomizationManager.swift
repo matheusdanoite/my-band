@@ -54,7 +54,7 @@ final class CustomizationManager {
             let data = try Data(contentsOf: url)
             await install(data: data, sourceName: url.lastPathComponent)
         } catch {
-            fail("Falha ao ler o arquivo: \(error.localizedDescription)")
+            fail("Failed to read the file: \(error.localizedDescription)")
         }
     }
 
@@ -64,7 +64,7 @@ final class CustomizationManager {
             let (data, _) = try await URLSession.shared.data(from: url)
             await install(data: data, sourceName: url.lastPathComponent)
         } catch {
-            fail("Falha ao baixar: \(error.localizedDescription)")
+            fail("Failed to download: \(error.localizedDescription)")
         }
     }
 
@@ -72,7 +72,7 @@ final class CustomizationManager {
 
     private func install(data: Data, sourceName: String) async {
         guard let file = InstallableFile.parse(data) else {
-            fail("Arquivo não reconhecido. Esperado watch face (.bin) ou app (.rpk).")
+            fail("Unrecognized file. Expected a watch face (.bin) or app (.rpk).")
             return
         }
         log.info("Parsed \(sourceName) → \(String(describing: file.kind)) id=\(file.id)")
@@ -83,7 +83,7 @@ final class CustomizationManager {
                 lastResult = InstallResult(message: "Watch face \"\(file.name)\" instalada.", isError: false)
             case .app:
                 try await apps.install(file)
-                lastResult = InstallResult(message: "App \"\(file.name)\" enviado para a pulseira.", isError: false)
+                lastResult = InstallResult(message: "App \"\(file.name)\" sent to the band.", isError: false)
             }
         } catch {
             fail(error.localizedDescription)

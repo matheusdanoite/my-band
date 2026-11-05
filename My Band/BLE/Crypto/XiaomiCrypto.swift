@@ -239,8 +239,8 @@ enum XiaomiCrypto {
 
         var errorDescription: String? {
             switch self {
-            case .invalidKeyLength(let n): return "Chave/nonce inválido: \(n) bytes."
-            case .cryptoFailed(let s):     return "Operação criptográfica falhou (CCCryptorStatus \(s))."
+            case .invalidKeyLength(let n): return "Invalid key/nonce: \(n) bytes."
+            case .cryptoFailed(let s):     return "Cryptographic operation failed (CCCryptorStatus \(s))."
             }
         }
     }

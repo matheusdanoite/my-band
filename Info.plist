@@ -13,7 +13,7 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Watch face ou app da Mi Band</string>
+			<string>Mi Band watch face or app</string>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
 			<key>LSItemContentTypes</key>
@@ -40,25 +40,25 @@
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<false/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>O My Band usa Bluetooth para se conectar à Mi Band 10 e sincronizar dados de atividade e sono em segundo plano.</string>
+	<string>My Band uses Bluetooth to connect to your Mi Band 10 and sync activity and sleep data in the background.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>O My Band envia seus próximos eventos de calendário para a Mi Band 10, para que você os veja no pulso.</string>
+	<string>My Band sends your upcoming calendar events to your Mi Band 10 so you can see them on your wrist.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>O My Band envia seus próximos eventos de calendário para a Mi Band 10, para que você os veja no pulso.</string>
+	<string>My Band sends your upcoming calendar events to your Mi Band 10 so you can see them on your wrist.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>O My Band consulta amostras já existentes no Apple Health para evitar gravar dados duplicados da sua Mi Band 10.</string>
+	<string>My Band reads existing samples in Apple Health to avoid writing duplicate data from your Mi Band 10.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>O My Band grava no Apple Health os dados sincronizados da sua Mi Band 10: sono, frequência cardíaca (incluindo repouso), passos, SpO₂, calorias, distância, temperatura corporal, VO₂máx e treinos com rota de GPS.</string>
+	<string>My Band writes the data synced from your Mi Band 10 to Apple Health: sleep, heart rate (including resting), steps, SpO₂, calories, distance, body temperature, VO₂ max, and workouts with GPS routes.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Permita "Sempre" para que a Mi Band 10 continue recebendo o GPS do iPhone quando a tela estiver bloqueada ou o app em segundo plano durante um treino ao ar livre. Sem isso a pulseira perde o sinal de GPS assim que você guarda o telefone no bolso.</string>
+	<string>Allow "Always" so your Mi Band 10 keeps receiving the iPhone's GPS while the screen is locked or the app is in the background during an outdoor workout. Without it, the band loses the GPS signal as soon as you put your phone in your pocket.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>Permita "Sempre" para que a Mi Band 10 continue recebendo o GPS do iPhone quando a tela estiver bloqueada ou o app em segundo plano durante um treino ao ar livre.</string>
+	<string>Allow "Always" so your Mi Band 10 keeps receiving the iPhone's GPS while the screen is locked or the app is in the background during an outdoor workout.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>O My Band usa sua localização para enviar à Mi Band 10 a previsão do tempo de onde você está e, durante treinos ao ar livre, a rota com GPS.</string>
+	<string>My Band uses your location to send your Mi Band 10 the weather forecast for where you are and, during outdoor workouts, the GPS route.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>O My Band envia seus lembretes com data para a Mi Band 10, para que a pulseira avise você na hora certa.</string>
+	<string>My Band sends your reminders with due dates to your Mi Band 10 so the band can alert you at the right time.</string>
 	<key>NSRemindersUsageDescription</key>
-	<string>O My Band envia seus lembretes com data para a Mi Band 10, para que a pulseira avise você na hora certa.</string>
+	<string>My Band sends your reminders with due dates to your Mi Band 10 so the band can alert you at the right time.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

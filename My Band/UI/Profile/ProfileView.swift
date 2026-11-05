@@ -31,10 +31,10 @@ struct ProfileView: View {
                     .padding(.vertical, MB.Space.x6)
                 }
             }
-            .navigationTitle("Perfil")
+            .navigationTitle("Profile")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Concluir") { dismiss() }
+                    Button("Done") { dismiss() }
                 }
             }
         }
@@ -53,15 +53,15 @@ struct ProfileView: View {
     private var heightSection: some View {
         VStack(alignment: .leading, spacing: MB.Space.x3) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Altura").font(.mbTitle3).foregroundStyle(MB.textPrimary)
-                Text("Necessária para o Apple Health calcular o IMC a partir do peso da balança.")
+                Text("Height").font(.mbTitle3).foregroundStyle(MB.textPrimary)
+                Text("Needed for Apple Health to calculate BMI from the scale weight.")
                     .font(.mbFootnote).foregroundStyle(MB.textTertiary)
             }
-            MBTextField(label: "Altura (cm)", text: $heightInput,
+            MBTextField(label: "Height (cm)", text: $heightInput,
                         icon: "ruler", placeholder: "180", mono: true,
-                        hint: "Entre 50 e 260 cm")
+                        hint: "Between 50 and 260 cm")
 
-            MBButton(title: saving ? "Salvando…" : "Salvar altura",
+            MBButton(title: saving ? "Saving…" : "Save height",
                      variant: .primary, size: .lg, icon: "square.and.arrow.down",
                      block: true, loading: saving, disabled: saving) {
                 save()
@@ -77,7 +77,7 @@ struct ProfileView: View {
 
     private func lastWeightNote(_ kg: Double) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Última pesagem").font(.mbSubheadEmph).foregroundStyle(MB.textSecondary)
+            Text("Last weigh-in").font(.mbSubheadEmph).foregroundStyle(MB.textSecondary)
             Text(String(format: "%.2f kg", kg)).font(.mbBody).foregroundStyle(MB.textPrimary)
         }
     }
@@ -88,7 +88,7 @@ struct ProfileView: View {
         let normalized = heightInput.replacingOccurrences(of: ",", with: ".")
         guard let cm = Double(normalized), (50...260).contains(cm) else {
             isError = true
-            message = "Informe uma altura entre 50 e 260 cm."
+            message = "Enter a height between 50 and 260 cm."
             return
         }
         saving = true
@@ -105,7 +105,7 @@ struct ProfileView: View {
                     try await HealthKitManager.shared.writeBodyMass(kg, date: date, heightMeters: cm / 100)
                 }
                 isError = false
-                message = "Altura salva no Apple Health."
+                message = "Height saved to Apple Health."
             } catch {
                 isError = true
                 message = error.localizedDescription

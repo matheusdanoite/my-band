@@ -54,7 +54,7 @@ final class AppServices {
     /// Foreground nudge: if a device is paired and we're not connected, (re)arm the connection. Safe
     /// to call repeatedly — a no-op when already connected, and a standing connect dedups at the
     /// CoreBluetooth level. Complements the BLE auto-reconnect for the case where a drop while the app
-    /// was suspended left nothing pending, so returning to foreground never shows a dead "desconectado".
+    /// was suspended left nothing pending, so returning to foreground never shows a dead "disconnected" state.
     func reconnectIfNeeded() {
         guard AuthKeyStore.isStored,
               let id = bandSyncer.currentDevice?.peripheralIdentifier,

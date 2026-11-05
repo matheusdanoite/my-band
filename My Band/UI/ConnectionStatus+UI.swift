@@ -3,21 +3,21 @@ import SwiftUI
 // MARK: - ConnectionState → UI
 //
 // Maps the BLE connection state to glanceable status (pill label/tone) and to the
-// monospace step line shown during the connecting handshake. pt-BR, sentence case.
+// monospace step line shown during the connecting handshake. English, sentence case.
 
 extension ConnectionState {
 
     /// Short label for a status pill, present on every screen.
     var pillLabel: String {
         switch self {
-        case .connected:           "Conectada"
-        case .scanning:            "Procurando…"
+        case .connected:           "Connected"
+        case .scanning:            "Searching…"
         case .connecting, .discoveringServices, .sessionConfig, .authenticating:
-                                   "Conectando…"
-        case .awaitingPairingConfirmation: "Confirme o pareamento"
-        case .disconnected:        "Desconectada"
-        case .bluetoothUnavailable: "Bluetooth desligado"
-        case .error:               "Erro de conexão"
+                                   "Connecting…"
+        case .awaitingPairingConfirmation: "Confirm pairing"
+        case .disconnected:        "Disconnected"
+        case .bluetoothUnavailable: "Bluetooth off"
+        case .error:               "Connection error"
         }
     }
 
@@ -42,16 +42,16 @@ extension ConnectionState {
     /// Detailed, technical-honest line for the connecting screen (monospace).
     var handshakeStep: String {
         switch self {
-        case .scanning:            "Procurando Xiaomi Smart Band 10…"
-        case .connecting:          "Conectando ao dispositivo…"
-        case .discoveringServices: "Descobrindo serviço FE95…"
-        case .sessionConfig:       "Negociando sessão…"
+        case .scanning:            "Searching for Xiaomi Smart Band 10…"
+        case .connecting:          "Connecting to device…"
+        case .discoveringServices: "Discovering FE95 service…"
+        case .sessionConfig:       "Negotiating session…"
         case .authenticating:      "Handshake HMAC-SHA256…"
         case .awaitingPairingConfirmation:
-                                   "Aguardando sua confirmação."
-        case .connected:           "Conectada."
-        case .disconnected:        "Desconectada."
-        case .bluetoothUnavailable: "Ative o Bluetooth para continuar."
+                                   "Waiting for your confirmation."
+        case .connected:           "Connected."
+        case .disconnected:        "Disconnected."
+        case .bluetoothUnavailable: "Turn on Bluetooth to continue."
         case .error(let msg):      msg
         }
     }

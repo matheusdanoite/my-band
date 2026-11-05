@@ -681,14 +681,14 @@ final class XiaomiCloudAuth {
 
         var errorDescription: String? {
             switch self {
-            case .network:             return "Falha de rede ao falar com a Xiaomi."
-            case .invalidUsername:     return "Usuário não reconhecido."
-            case .invalidCredentials:  return "Usuário ou senha incorretos."
-            case .captchaFailed:       return "Não foi possível carregar o captcha. Tente novamente."
-            case .invalidCaptcha:      return "Captcha incorreto."
-            case .twoFactorFailed:     return "Não foi possível confirmar o código de verificação."
-            case .noServiceToken:      return "Login não concluído — a Xiaomi não confirmou a sessão."
-            case .noBandFound:         return "Nenhuma pulseira encontrada nesta conta Xiaomi."
+            case .network:             return "Network error while talking to Xiaomi."
+            case .invalidUsername:     return "Username not recognized."
+            case .invalidCredentials:  return "Incorrect username or password."
+            case .captchaFailed:       return "Couldn't load the captcha. Please try again."
+            case .invalidCaptcha:      return "Incorrect captcha."
+            case .twoFactorFailed:     return "Couldn't confirm the verification code."
+            case .noServiceToken:      return "Login not completed — Xiaomi did not confirm the session."
+            case .noBandFound:         return "No band found on this Xiaomi account."
             }
         }
     }

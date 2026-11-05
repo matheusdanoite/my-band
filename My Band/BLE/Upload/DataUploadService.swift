@@ -29,10 +29,10 @@ final class DataUploadService {
 
         var errorDescription: String? {
             switch self {
-            case .notConnected: "Pulseira não conectada."
-            case .rejected:     "A pulseira recusou o upload."
-            case .timeout:      "Tempo esgotado durante o upload."
-            case .md5Failed:    "Falha ao calcular o checksum do arquivo."
+            case .notConnected: "Band not connected."
+            case .rejected:     "The band rejected the upload."
+            case .timeout:      "Timed out during upload."
+            case .md5Failed:    "Failed to compute the file checksum."
             }
         }
     }

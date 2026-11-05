@@ -2,26 +2,26 @@
 status: accepted
 ---
 
-# A AuthKey precisa sobreviver a updates, renomeações e relaunches
+# The AuthKey must survive updates, renames and relaunches
 
-A AuthKey é o segredo de pareamento da pulseira e o único estado que o app **não** consegue reconstruir sozinho: perdê-la significa mandar o usuário refazer o onboarding inteiro (extração via Xiaomi Cloud ou cópia manual dos 32 hex). O `BandDevice` no SwiftData é descartável — a pulseira é redescoberta por scan. A chave não é.
+The AuthKey is the band's pairing secret and the only state the app **cannot** rebuild on its own: losing it means sending the user back through the whole onboarding (extraction via Xiaomi Cloud or manually copying the 32 hex characters). The `BandDevice` in SwiftData is disposable — the band is rediscovered by scanning. The key is not.
 
-O `AuthKeyStore` original tratava o Keychain como um dicionário simples, e três detalhes discretos podiam apagar ou esconder a chave:
+The original `AuthKeyStore` treated the Keychain as a simple dictionary, and three discreet details could erase or hide the key:
 
-1. **O item era indexado pelo bundle id lido em runtime** (`Bundle.main.bundleIdentifier`). Uma renomeação de bundle ou de target faria o app se apresentar como não pareado com a chave intacta no Keychain, sob o nome antigo.
-2. **`save` fazia `delete` + `add`.** Se o `add` falhasse, a chave já tinha ido embora — um erro transitório de Keychain virava um re-pareamento.
-3. **`isStored` era `(try? load()) != nil`.** Isso colapsa "não existe" e "não dá para ler agora" na mesma resposta. Num relaunch em background — state restoration do CoreBluetooth quando a pulseira volta ao alcance — **antes do primeiro desbloqueio pós-boot**, um item `kSecAttrAccessibleAfterFirstUnlock` existe mas é ilegível. O app respondia "sem chave" e roteava um usuário já pareado de volta para o setup.
+1. **The item was indexed by the bundle id read at runtime** (`Bundle.main.bundleIdentifier`). Renaming the bundle or the target would make the app present itself as unpaired, with the key still intact in the Keychain under the old name.
+2. **`save` did `delete` + `add`.** If the `add` failed, the key was already gone — a transient Keychain error turned into a re-pairing.
+3. **`isStored` was `(try? load()) != nil`.** That collapses "doesn't exist" and "can't be read right now" into the same answer. On a background relaunch — CoreBluetooth state restoration when the band comes back into range — **before the first unlock after boot**, a `kSecAttrAccessibleAfterFirstUnlock` item exists but is unreadable. The app answered "no key" and routed an already-paired user back to setup.
 
-## Decisão
+## Decision
 
-- **`service` fixo** (`com.myband.authkey`), deliberadamente desacoplado do `Bundle.main`, com migração automática do item legado (bundle id) na primeira leitura.
-- **`save` atualiza no lugar** (`SecItemUpdate`, com `SecItemAdd` só quando o item não existe).
-- **Item fixado como não-sincronizável** (`kSecAttrSynchronizable: false`, também na query), para que nenhuma entrada do iCloud Keychain sombreie ou substitua a local.
-- **`AuthKeyError.locked` separado de `.notFound`**: `isStored` responde `true` para um Keychain bloqueado. Direção segura — o app se comporta como pareado e a leitura real tenta de novo mais tarde.
-- `kSecAttrAccessibleAfterFirstUnlock` continua, e continua obrigatório: sem ele o sync em background não consegue ler a chave.
+- **Fixed `service`** (`com.myband.authkey`), deliberately decoupled from `Bundle.main`, with automatic migration of the legacy (bundle id) item on first read.
+- **`save` updates in place** (`SecItemUpdate`, with `SecItemAdd` only when the item doesn't exist).
+- **Item pinned as non-synchronizable** (`kSecAttrSynchronizable: false`, also in the query), so that no iCloud Keychain entry can shadow or replace the local one.
+- **`AuthKeyError.locked` kept separate from `.notFound`**: `isStored` answers `true` for a locked Keychain. The safe direction — the app behaves as paired and the real read tries again later.
+- `kSecAttrAccessibleAfterFirstUnlock` stays, and stays mandatory: without it background sync cannot read the key.
 
-## Consequências
+## Consequences
 
-- **O `service` fixo é agora uma constante de compatibilidade**, não um detalhe. Mudá-la sem migração é a mesma classe de bug que ela corrige.
-- **Não há `kSecAttrAccessGroup`.** A chave ainda se perde se o app for reassinado com outro Team ID. Um split multi-target (ex.: uma extensão que precise da chave) exige decidir um access group explícito e migrar de novo.
-- **Um Keychain genuinamente quebrado agora aparece como erro de conexão**, não como "configure a chave". É o trade-off do ponto 3 e é o comportamento certo: mandar um usuário pareado para o setup é uma perda de dados disfarçada de tela.
+- **The fixed `service` is now a compatibility constant**, not a detail. Changing it without a migration is the same class of bug it fixes.
+- **There is no `kSecAttrAccessGroup`.** The key is still lost if the app is re-signed with a different Team ID. A multi-target split (e.g. an extension that needs the key) requires choosing an explicit access group and migrating again.
+- **A genuinely broken Keychain now shows up as a connection error**, not as "set up the key". This is the trade-off of point 3 and it is the right behavior: sending a paired user to setup is data loss disguised as a screen.

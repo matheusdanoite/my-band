@@ -34,10 +34,10 @@ struct CustomizeView: View {
                 }
                 if customization.isInstalling { installOverlay }
             }
-            .navigationTitle("Personalização")
+            .navigationTitle("Customize")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Concluir") { dismiss() }
+                    Button("Done") { dismiss() }
                 }
             }
         }
@@ -56,8 +56,8 @@ struct CustomizeView: View {
 
     private var importSection: some View {
         VStack(alignment: .leading, spacing: MB.Space.x3) {
-            sectionHeader("Instalar", subtitle: "Watch face (.bin) ou app (.rpk)")
-            MBButton(title: "Escolher arquivo", variant: .primary, size: .lg,
+            sectionHeader("Install", subtitle: "Watch face (.bin) or app (.rpk)")
+            MBButton(title: "Choose file", variant: .primary, size: .lg,
                      icon: "folder", block: true, disabled: !connected || customization.isInstalling) {
                 showFileImporter = true
             }
@@ -71,7 +71,7 @@ struct CustomizeView: View {
                     .padding(.horizontal, MB.Space.x4)
                     .padding(.vertical, MB.Space.x3)
                     .background(MB.surfaceControl, in: RoundedRectangle(cornerRadius: MB.Radius.md))
-                MBButton(title: "Baixar", variant: .secondary, size: .md,
+                MBButton(title: "Download", variant: .secondary, size: .md,
                          disabled: !connected || customization.isInstalling || downloadURL == nil) {
                     if let url = downloadURL {
                         urlText = ""
@@ -94,7 +94,7 @@ struct CustomizeView: View {
         VStack(alignment: .leading, spacing: MB.Space.x3) {
             sectionHeader("Watch faces", subtitle: faceSubtitle)
             if customization.watchfaces.faces.isEmpty {
-                emptyRow("Nenhuma watch face listada")
+                emptyRow("No watch faces listed")
             } else {
                 ForEach(customization.watchfaces.faces) { face in
                     row(title: face.name, subtitle: face.id,
@@ -107,16 +107,16 @@ struct CustomizeView: View {
     }
 
     private var faceSubtitle: String {
-        connected ? "toque para ativar" : "conecte a pulseira"
+        connected ? "tap to activate" : "connect your band"
     }
 
     // MARK: - Apps
 
     private var appsSection: some View {
         VStack(alignment: .leading, spacing: MB.Space.x3) {
-            sectionHeader("Apps", subtitle: connected ? "quick apps instalados" : "conecte a pulseira")
+            sectionHeader("Apps", subtitle: connected ? "installed quick apps" : "connect your band")
             if customization.apps.apps.isEmpty {
-                emptyRow("Nenhum app listado")
+                emptyRow("No apps listed")
             } else {
                 ForEach(customization.apps.apps) { app in
                     row(title: app.name, subtitle: app.id,
@@ -146,7 +146,7 @@ struct CustomizeView: View {
             }
             Spacer()
             if active {
-                Label("Ativa", systemImage: "checkmark.circle.fill")
+                Label("Active", systemImage: "checkmark.circle.fill")
                     .labelStyle(.iconOnly)
                     .foregroundStyle(MB.ok)
             }
@@ -186,7 +186,7 @@ struct CustomizeView: View {
     }
 
     private var disconnectedNote: some View {
-        Text("Conecte a pulseira para gerenciar e instalar.")
+        Text("Connect your band to manage and install.")
             .font(.mbFootnote).foregroundStyle(MB.warn)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -198,7 +198,7 @@ struct CustomizeView: View {
                 ProgressView(value: customization.progress ?? 0)
                     .tint(MB.accent)
                     .frame(width: 200)
-                Text("Enviando… \(Int((customization.progress ?? 0) * 100))%")
+                Text("Sending… \(Int((customization.progress ?? 0) * 100))%")
                     .font(.mbSubhead).foregroundStyle(MB.textSecondary)
             }
             .padding(MB.Space.x7)

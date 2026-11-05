@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - DashboardView
 //
 // Minimal first dashboard: live band status, battery, last Apple Health sync, and a
-// "Sincronizar com Apple Health" action. Sleep/activity detail comes in a later phase.
+// "Sync with Apple Health" action. Sleep/activity detail comes in a later phase.
 
 struct DashboardView: View {
 
@@ -35,16 +35,16 @@ struct DashboardView: View {
                     header
                     metrics
                     syncSection
-                    MBButton(title: "Personalização", variant: .secondary, size: .lg,
+                    MBButton(title: "Customize", variant: .secondary, size: .lg,
                              icon: "square.grid.2x2", block: true, disabled: !connected) {
                         showCustomize = true
                     }
-                    MBButton(title: "Perfil", variant: .secondary, size: .lg,
+                    MBButton(title: "Profile", variant: .secondary, size: .lg,
                              icon: "person.text.rectangle", block: true) {
                         showProfile = true
                     }
                     Spacer(minLength: MB.Space.x6)
-                    MBButton(title: "Esquecer pulseira", variant: .ghost, size: .md, block: true,
+                    MBButton(title: "Forget band", variant: .ghost, size: .md, block: true,
                              action: onForget)
                 }
                 .padding(.horizontal, MB.Space.screenPad)
@@ -64,7 +64,7 @@ struct DashboardView: View {
                 Text(syncer.currentDevice?.name ?? "Mi Band 10")
                     .font(.mbTitle1).tracking(-0.02 * 28)
                     .foregroundStyle(MB.textPrimary)
-                Text("Sua pulseira").font(.mbSubhead).foregroundStyle(MB.textTertiary)
+                Text("Your band").font(.mbSubhead).foregroundStyle(MB.textTertiary)
             }
             Spacer()
             MBStatusPill(text: band.connectionState.pillLabel,
@@ -80,16 +80,16 @@ struct DashboardView: View {
         HStack(spacing: MB.Space.x3) {
             MBMetricTile(
                 icon: batteryIcon, tint: batteryTint, tintSoft: batteryTintSoft,
-                label: "Bateria",
+                label: "Battery",
                 value: band.batteryLevel.map(String.init) ?? "—",
                 unit: band.batteryLevel != nil ? "%" : nil,
-                foot: band.batteryCharging ? "Carregando" : nil
+                foot: band.batteryCharging ? "Charging" : nil
             )
             MBMetricTile(
                 icon: "heart.fill", tint: MB.hr, tintSoft: MB.hrSoft,
                 label: "Apple Health",
                 value: lastSyncText,
-                foot: "última sincronização"
+                foot: "last sync"
             )
         }
     }
@@ -98,13 +98,13 @@ struct DashboardView: View {
 
     private var syncSection: some View {
         VStack(spacing: MB.Space.x3) {
-            MBButton(title: syncing ? "Sincronizando…" : "Sincronizar com Apple Health",
+            MBButton(title: syncing ? "Syncing…" : "Sync with Apple Health",
                      variant: .primary, size: .lg, icon: "arrow.triangle.2.circlepath",
                      block: true, glow: true, loading: syncing, disabled: !connected || syncing) {
                 runSync()
             }
             if !connected {
-                MBButton(title: connecting ? "Conectando…" : "Reconectar",
+                MBButton(title: connecting ? "Connecting…" : "Reconnect",
                          variant: .secondary, size: .lg,
                          icon: "antenna.radiowaves.left.and.right",
                          block: true, loading: connecting, disabled: connecting) {
@@ -118,7 +118,7 @@ struct DashboardView: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
             } else if !connected {
-                Text("Conecte a pulseira para sincronizar.")
+                Text("Connect your band to sync.")
                     .font(.mbFootnote).foregroundStyle(MB.textTertiary)
                     .frame(maxWidth: .infinity)
             }
@@ -142,7 +142,7 @@ struct DashboardView: View {
                 // so a manual tap can't race a sync already in flight.
                 let outcome = try await BackgroundSyncManager.shared.syncNow()
                 resultIsError = false
-                resultText = "Sincronizado · \(outcome.healthSamplesWritten) amostras no Apple Health"
+                resultText = "Synced · \(outcome.healthSamplesWritten) samples in Apple Health"
             } catch {
                 resultIsError = true
                 resultText = error.localizedDescription
@@ -154,9 +154,9 @@ struct DashboardView: View {
     // MARK: Derived
 
     private var lastSyncText: String {
-        guard let date = syncer.lastHealthSync else { return "Nunca" }
+        guard let date = syncer.lastHealthSync else { return "Never" }
         let f = RelativeDateTimeFormatter()
-        f.locale = Locale(identifier: "pt_BR")
+        f.locale = Locale(identifier: "en_US")
         f.unitsStyle = .abbreviated
         return f.localizedString(for: date, relativeTo: Date())
     }

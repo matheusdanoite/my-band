@@ -23,7 +23,7 @@ final class WeatherSyncService: NSObject {
 
     private let geocodeCacheKey = "myband.weatherGeocodeCache"
     /// Administrative context appended to disambiguate local names (see coordinates(forLocationNamed:)).
-    private let homeContext = "Guarapuava, Paraná, Brasil"
+    private let homeContext = "Guarapuava, Paraná, Brazil"
     /// A result this close to the default counts as "the home area" (Guarapuava is ~50 km across).
     private let homeAreaRadius: CLLocationDistance = 60_000
 
@@ -105,7 +105,7 @@ final class WeatherSyncService: NSObject {
         async -> (lat: Double, lon: Double, name: String, code: String, isCurrent: Bool) {
 
         if let loc = await currentLocation() {
-            let name = await placeName(for: loc) ?? (requestedName.isEmpty ? "Localização atual" : requestedName)
+            let name = await placeName(for: loc) ?? (requestedName.isEmpty ? "Current location" : requestedName)
             // Echo the requested key so the band binds the reply to the tile it's waiting on; for a
             // proactive push (no request) derive a stable key from the resolved name.
             let code = requestedKey.isEmpty ? locationKey(name) : requestedKey
@@ -165,7 +165,7 @@ final class WeatherSyncService: NSObject {
     private func placeName(for loc: CLLocation) async -> String? {
         let cellKey = String(format: "%.2f,%.2f", loc.coordinate.latitude, loc.coordinate.longitude)
         if let cached = placeNameCache[cellKey] { return cached }
-        guard let placemarks = try? await CLGeocoder().reverseGeocodeLocation(loc, preferredLocale: Locale(identifier: "pt_BR")),
+        guard let placemarks = try? await CLGeocoder().reverseGeocodeLocation(loc, preferredLocale: Locale(identifier: "en_US")),
               let p = placemarks.first else { return nil }
         let name = p.locality ?? p.subAdministrativeArea ?? p.name
         if let name { placeNameCache[cellKey] = name }
@@ -219,7 +219,7 @@ final class WeatherSyncService: NSObject {
     private func geocode(_ query: String) async -> CLLocation? {
         let region = CLCircularRegion(center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
                                       radius: 2_000_000, identifier: "weather-hint")
-        guard let placemarks = try? await CLGeocoder().geocodeAddressString(query, in: region, preferredLocale: Locale(identifier: "pt_BR")) else {
+        guard let placemarks = try? await CLGeocoder().geocodeAddressString(query, in: region, preferredLocale: Locale(identifier: "en_US")) else {
             return nil
         }
         return placemarks.first?.location

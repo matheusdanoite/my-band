@@ -118,11 +118,11 @@ enum AuthKeyError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notFound:               return "AuthKey não encontrado. Configure a chave da pulseira."
-        case .locked:                 return "Keychain bloqueado. Desbloqueie o iPhone e tente de novo."
-        case .invalidLength(let n):   return "AuthKey deve ter 16 bytes; recebido \(n)."
-        case .invalidHex:             return "Formato inválido. Informe 32 caracteres hexadecimais."
-        case .keychainError(let s):   return "Erro no Keychain (OSStatus \(s))."
+        case .notFound:               return "AuthKey not found. Set up the band key."
+        case .locked:                 return "Keychain is locked. Unlock your iPhone and try again."
+        case .invalidLength(let n):   return "AuthKey must be 16 bytes; received \(n)."
+        case .invalidHex:             return "Invalid format. Enter 32 hexadecimal characters."
+        case .keychainError(let s):   return "Keychain error (OSStatus \(s))."
         }
     }
 }

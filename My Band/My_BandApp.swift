@@ -4,9 +4,9 @@ import SwiftData
 @main
 struct My_BandApp: App {
 
-    // static: garantia de única inicialização por processo.
-    // App structs do SwiftUI podem ser recriadas durante setup de cena,
-    // o que faria um `var` recriar o container (e o store SQLite) a cada vez.
+    // static: guarantees a single initialization per process.
+    // SwiftUI App structs can be recreated during scene setup,
+    // which would make a `var` recreate the container (and the SQLite store) every time.
     static let sharedModelContainer: ModelContainer = {
         let schema = Schema([
             BandDevice.self,
@@ -17,8 +17,8 @@ struct My_BandApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [config])
         } catch {
-            // Store corrompido (ex: watchdog kill durante gravação).
-            // Em dev: apaga e recria. Em prod isso perderia dados — trocar por migração adequada.
+            // Corrupted store (e.g. watchdog kill during a write).
+            // In dev: delete and recreate. In prod this would lose data — replace with a proper migration.
             let storeURL = config.url
             try? FileManager.default.removeItem(at: storeURL)
             try? FileManager.default.removeItem(at: storeURL.deletingPathExtension().appendingPathExtension("store-shm"))
@@ -68,13 +68,13 @@ struct My_BandApp: App {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .background:
-                // Garante que há um pedido de sync agendado.
+                // Ensures a sync request is scheduled.
                 BackgroundSyncManager.shared.scheduleNext()
             case .active:
-                // Voltando ao foreground após tempo em background: reassume a conexão. O
-                // auto-reconnect do BLE normalmente já mantém o link, mas uma queda com o app
-                // suspenso pode ter deixado nada pendente — este empurrão evita um "desconectado"
-                // morto sem como reconectar.
+                // Returning to the foreground after time in the background: resume the connection. BLE
+                // auto-reconnect normally keeps the link alive already, but a drop while the app was
+                // suspended may have left nothing pending — this nudge avoids a dead "disconnected"
+                // state with no way to reconnect.
                 AppServices.shared.reconnectIfNeeded()
             default:
                 break

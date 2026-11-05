@@ -5,36 +5,38 @@ import UserNotifications
 
 // MARK: - CheckBandBatteryIntent
 //
-// "Avisar se a bateria da pulseira estiver baixa" — feito para uma Automação Pessoal do Atalhos
-// ("quando eu conectar o iPhone ao carregador"): se a pulseira estiver abaixo do limite, dispara
-// uma notificação local lembrando de colocá-la para carregar; acima do limite, o atalho termina
-// em silêncio (sem diálogo, sem notificação), para não virar ruído toda vez que a automação roda.
+// "Warn me if the band battery is low" — built for a Shortcuts Personal Automation
+// ("when I connect my iPhone to the charger"): if the band is below the threshold, it fires
+// a local notification reminding you to put it on the charger; above the threshold, the shortcut
+// finishes silently (no dialog, no notification) so it doesn't become noise every time the
+// automation runs.
 //
-// O nível de bateria só é conhecido com o link ativo. A fonte preferida é a característica GATT
-// padrão Battery Level (0x2A19) — a mesma que o iOS lê para o widget Baterias, então atalho e
-// widget mostram o mesmo número; sem ela, vale o CMD_BATTERY do protocolo Xiaomi. O intent roda
-// um sync best-effort primeiro (que conecta, se necessário) e depois pede uma leitura fresca,
-// caso o link já estivesse aberto há tempo e o valor em memória esteja velho.
+// The battery level is only known while the link is up. The preferred source is the standard
+// GATT Battery Level characteristic (0x2A19) — the same one iOS reads for the Batteries widget,
+// so the shortcut and the widget show the same number; without it, the Xiaomi protocol's
+// CMD_BATTERY is used. The intent runs a best-effort sync first (which connects if needed) and
+// then requests a fresh reading, in case the link had been open for a while and the in-memory
+// value is stale.
 
 struct CheckBandBatteryIntent: AppIntent {
 
-    static var title: LocalizedStringResource = "Verificar bateria da pulseira"
+    static var title: LocalizedStringResource = "Check band battery"
     static var description = IntentDescription(
-        "Verifica a bateria da Mi Band 10 e notifica apenas se estiver abaixo da porcentagem informada."
+        "Checks the Mi Band 10 battery and notifies only if it is below the given percentage."
     )
 
     static var openAppWhenRun = false
 
     @Parameter(
-        title: "Notificar abaixo de",
-        description: "Porcentagem mínima. Acima dela o atalho não produz nenhuma saída.",
+        title: "Notify below",
+        description: "Minimum percentage. Above it, the shortcut produces no output.",
         default: 30,
         inclusiveRange: (1, 100)
     )
     var threshold: Int
 
-    /// Teto de espera pelas leituras de bateria depois do sync (2A19 + CMD_BATTERY). Não é um
-    /// sleep: o intent segue assim que as duas respostas chegam.
+    /// Upper bound on waiting for the battery readings after the sync (2A19 + CMD_BATTERY). It is
+    /// not a sleep: the intent proceeds as soon as both responses arrive.
     private static let batteryRefreshWait: Duration = .seconds(3)
 
     private static let notificationID = "com.myband.lowbattery"
@@ -48,26 +50,27 @@ struct CheckBandBatteryIntent: AppIntent {
         let band = AppServices.shared.bandManager
         let hadLiveLink = band.connectionState.isConnected
 
-        // O link precisa sobreviver ao sync: o pedido de bateria abaixo depende dele. Com o padrão
-        // (`disconnectWhenDone: nil`) o sync derrubava a conexão que ele mesmo abriu antes do
-        // CMD_BATTERY, então o intent respondia com o nível velho em memória (ou nil) e o link
-        // caía no meio dos ACKs finais do sync — que a pulseira então re-oferecia na conexão
-        // seguinte. Só soltamos o rádio no fim, e só se fomos nós que o abrimos.
+        // The link must survive the sync: the battery request below depends on it. With the default
+        // (`disconnectWhenDone: nil`) the sync tore down the connection it had opened itself before
+        // CMD_BATTERY, so the intent answered with the stale in-memory level (or nil) and the link
+        // dropped in the middle of the sync's final ACKs — which the band then re-offered on the
+        // next connection. We only release the radio at the end, and only if we were the ones who
+        // opened it.
         defer { if !hadLiveLink { band.disconnect(userInitiated: false) } }
 
-        // Best-effort: se a pulseira estiver fora de alcance, ainda respondemos com o último nível
-        // conhecido em vez de falhar o atalho (e, portanto, a automação inteira).
+        // Best-effort: if the band is out of range, we still answer with the last known level
+        // instead of failing the shortcut (and therefore the whole automation).
         do {
             _ = try await BackgroundSyncManager.shared.syncNow(disconnectWhenDone: false)
         } catch {
-            Self.log.error("Sync do intent de bateria falhou: \(error.localizedDescription)")
+            Self.log.error("Battery intent sync failed: \(error.localizedDescription)")
         }
 
         await band.refreshBattery(timeout: Self.batteryRefreshWait)
 
         guard let level = band.batteryLevel else { return .result(value: nil) }
 
-        // Já está no carregador: o lembrete não teria propósito.
+        // Already on the charger: the reminder would serve no purpose.
         if level < threshold && !band.batteryCharging {
             await notifyLowBattery(level: level)
         }
@@ -79,8 +82,8 @@ struct CheckBandBatteryIntent: AppIntent {
         _ = try? await center.requestAuthorization(options: [.alert, .sound])
 
         let content = UNMutableNotificationContent()
-        content.title = "Bateria da pulseira baixa"
-        content.body  = "A pulseira está com \(level)%. Coloque para carregar."
+        content.title = "Band battery low"
+        content.body  = "Your band is at \(level)%. Put it on the charger."
         content.sound = .default
 
         let request = UNNotificationRequest(identifier: Self.notificationID, content: content, trigger: nil)

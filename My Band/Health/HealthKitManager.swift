@@ -60,7 +60,7 @@ final class HealthKitManager {
     private let workoutType      = HKObjectType.workoutType()
     private let routeType        = HKSeriesType.workoutRoute()
 
-    /// MET: 1 kcal por kg por hora — a unidade do physicalEffort e do HKMetadataKeyAverageMETs.
+    /// MET: 1 kcal per kg per hour — the unit of physicalEffort and HKMetadataKeyAverageMETs.
     private static let metUnit = HKUnit.kilocalorie()
         .unitDivided(by: HKUnit.gramUnit(with: .kilo).unitMultiplied(by: .hour()))
 
@@ -876,7 +876,7 @@ enum HealthError: LocalizedError {
     case unavailable
     var errorDescription: String? {
         switch self {
-        case .unavailable: "O Apple Health não está disponível neste dispositivo."
+        case .unavailable: "Apple Health is not available on this device."
         }
     }
 }

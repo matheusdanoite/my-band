@@ -48,11 +48,11 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     brandMark
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Conecte sua\nMi Band 10")
+                        Text("Connect your\nMi Band 10")
                             .font(.mbTitle1)
                             .tracking(-0.02 * 28)
                             .foregroundStyle(MB.textPrimary)
-                        Text("Sem o app da Xiaomi. Seus dados vão direto para onde você quiser.")
+                        Text("No Xiaomi app. Your data goes straight where you want it.")
                             .font(.mbBody)
                             .foregroundStyle(MB.textSecondary)
                             .frame(maxWidth: 280, alignment: .leading)
@@ -61,13 +61,13 @@ struct SetupView: View {
 
                 VStack(alignment: .leading, spacing: 18) {
                     feature(icon: "heart.fill", bg: MB.hrSoft, fg: MB.hr,
-                            title: "Apple Health", sub: "Sono, FC, passos e SpO₂")
+                            title: "Apple Health", sub: "Sleep, HR, steps and SpO₂")
                     feature(icon: "mic.fill", bg: MB.spo2Soft, fg: MB.spo2,
-                            title: "Atalhos e Siri", sub: "“Você está dormindo?”")
+                            title: "Shortcuts & Siri", sub: "“Am I asleep?”")
                 }
             }
             Spacer()
-            MBButton(title: "Começar", variant: .primary, size: .lg,
+            MBButton(title: "Get started", variant: .primary, size: .lg,
                      iconRight: "arrow.right", block: true, glow: true) {
                 step = .choose
             }
@@ -81,17 +81,17 @@ struct SetupView: View {
 
     private var methodChoice: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MBIconButton(icon: "arrow.left", variant: .plain, accessibilityLabelText: "Voltar") {
+            MBIconButton(icon: "arrow.left", variant: .plain, accessibilityLabelText: "Back") {
                 step = .intro
             }
             .padding(.bottom, 18)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Obter a AuthKey")
+                Text("Get the AuthKey")
                     .font(.mbTitle1)
                     .tracking(-0.02 * 28)
                     .foregroundStyle(MB.textPrimary)
-                Text("A chave de pareamento da pulseira. Extraia da sua conta Xiaomi ou informe manualmente.")
+                Text("The band's pairing key. Extract it from your Xiaomi account or enter it manually.")
                     .font(.mbBody)
                     .foregroundStyle(MB.textSecondary)
             }
@@ -99,14 +99,14 @@ struct SetupView: View {
 
             VStack(spacing: 14) {
                 methodCard(
-                    icon: "qrcode", title: "Extrair da conta Xiaomi",
-                    sub: "Escaneie um QR e o app busca a chave sozinho.",
+                    icon: "qrcode", title: "Extract from Xiaomi account",
+                    sub: "Scan a QR code and the app fetches the key on its own.",
                     recommended: true
                 ) { step = .xiaomi }
 
                 methodCard(
-                    icon: "key.fill", title: "Inserir manualmente",
-                    sub: "Já tem a chave de 32 caracteres? Cole aqui.",
+                    icon: "key.fill", title: "Enter manually",
+                    sub: "Already have the 32-character key? Paste it here.",
                     recommended: false
                 ) { step = .key }
             }
@@ -130,7 +130,7 @@ struct SetupView: View {
                     HStack(spacing: 8) {
                         Text(title).font(.mbHeadline).foregroundStyle(MB.textPrimary)
                         if recommended {
-                            Text("Recomendado")
+                            Text("Recommended")
                                 .font(.mbCaption)
                                 .foregroundStyle(MB.accent200)
                                 .padding(.horizontal, 8).padding(.vertical, 2)
@@ -188,18 +188,18 @@ struct SetupView: View {
     private var keyEntry: some View {
         VStack(alignment: .leading, spacing: 0) {
             MBIconButton(icon: "arrow.left", variant: .plain,
-                         accessibilityLabelText: "Voltar") {
+                         accessibilityLabelText: "Back") {
                 step = .choose
             }
             .padding(.bottom, 18)
 
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Inserir AuthKey")
+                    Text("Enter AuthKey")
                         .font(.mbTitle1)
                         .tracking(-0.02 * 28)
                         .foregroundStyle(MB.textPrimary)
-                    Text("A chave de 32 caracteres da sua pulseira. Fica guardada apenas no Keychain.")
+                    Text("The 32-character key for your band. It is stored only in the Keychain.")
                         .font(.mbBody)
                         .foregroundStyle(MB.textSecondary)
                 }
@@ -211,7 +211,7 @@ struct SetupView: View {
                     placeholder: "32 caracteres hex",
                     mono: true,
                     secure: true,
-                    hint: "Obtenha via GadgetBridge, huami-token ou Xiaomi Cloud.",
+                    hint: "Get it via GadgetBridge, huami-token or Xiaomi Cloud.",
                     errorText: fieldError
                 )
                 .onChange(of: key) { _, _ in fieldError = nil }
@@ -219,7 +219,7 @@ struct SetupView: View {
 
             Spacer()
 
-            MBButton(title: "Conectar pulseira", variant: .primary, size: .lg,
+            MBButton(title: "Connect band", variant: .primary, size: .lg,
                      icon: "dot.radiowaves.left.and.right", block: true, glow: true,
                      disabled: !keyValid) {
                 fieldError = onConnect(key)

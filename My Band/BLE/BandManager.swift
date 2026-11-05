@@ -171,7 +171,7 @@ final class BandManager: NSObject {
     private var awaitingPairingConfirmation = false
 
     // Real auth watchdog. Before this, AuthError.timeout was only ever thrown from a disconnect, so
-    // "Tempo esgotado" actually meant "the link dropped" and a band that simply went silent hung
+    // "Timed out" actually meant "the link dropped" and a band that simply went silent hung
     // until CoreBluetooth noticed. Re-armed by every auth packet that makes progress.
     // The band can tear down its session and open a new one mid-link (observed right after the
     // post-auth init). Each restart costs a full re-handshake, so it's bounded — a band that keeps
@@ -1271,9 +1271,9 @@ extension BandManager: CBCentralManagerDelegate {
         case .poweredOff:
             connectionState = .bluetoothUnavailable
         case .unauthorized:
-            connectionState = .error("Acesso Bluetooth não autorizado.")
+            connectionState = .error("Bluetooth access not authorized.")
         case .unsupported:
-            connectionState = .error("Este dispositivo não suporta Bluetooth LE.")
+            connectionState = .error("This device does not support Bluetooth LE.")
         default:
             connectionState = .bluetoothUnavailable
         }
@@ -1309,7 +1309,7 @@ extension BandManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         log.error("Failed to connect: \(error?.localizedDescription ?? "unknown")")
         lastError = error
-        connectionState = .error(error?.localizedDescription ?? "Falha na conexão")
+        connectionState = .error(error?.localizedDescription ?? "Connection failed")
         scheduleReconnect(to: peripheral)
     }
 

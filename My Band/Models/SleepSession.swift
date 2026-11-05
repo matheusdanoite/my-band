@@ -11,9 +11,9 @@ enum SleepPhaseType: Int, Codable, CaseIterable, Equatable {
 
     var localizedName: String {
         switch self {
-        case .awake: return "Acordado"
-        case .light: return "Sono Leve"
-        case .deep:  return "Sono Profundo"
+        case .awake: return "Awake"
+        case .light: return "Light Sleep"
+        case .deep:  return "Deep Sleep"
         case .rem:   return "REM"
         }
     }

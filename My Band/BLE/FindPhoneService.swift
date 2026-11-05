@@ -128,8 +128,8 @@ final class FindPhoneService: NSObject {
 
     private func postNotification() {
         let content = UNMutableNotificationContent()
-        content.title = "Encontrar telefone"
-        content.body  = "A pulseira está tocando um alarme neste iPhone."
+        content.title = "Find phone"
+        content.body  = "Your band is sounding an alarm on this iPhone."
         content.sound = .defaultCritical
         let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)

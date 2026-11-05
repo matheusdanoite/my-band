@@ -60,7 +60,7 @@ struct MBTextField: View {
                             .foregroundStyle(MB.textTertiary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(reveal ? "Ocultar" : "Mostrar")
+                    .accessibilityLabel(reveal ? "Hide" : "Show")
                 }
             }
             .padding(.horizontal, 14)

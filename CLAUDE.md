@@ -1,134 +1,134 @@
 # CLAUDE.md — My Band
 
-Guia de arquitetura e diretrizes para o projeto **My Band**: app iOS/macOS universal que conecta a Mi Band 10 via BLE usando AuthKey, sincroniza dados de saúde com o Apple Health e suporta Atalhos via App Intents. Sem visualização de dados de saúde em tela própria — o Apple Health é a única superfície de dados; o app é só sincronização, configuração e status.
+Architecture guide and guidelines for the **My Band** project: a universal iOS/macOS app that connects the Mi Band 10 via BLE using an AuthKey, syncs health data with Apple Health and supports Shortcuts via App Intents. No health-data visualization on its own screen — Apple Health is the only data surface; the app is just sync, configuration and status.
 
 ---
 
-## Visão Geral do Projeto
+## Project Overview
 
-| Item | Detalhe |
+| Item | Detail |
 |---|---|
-| Plataformas | iOS 26+ (um único target Xcode; roda no Mac via "Designed for iPad and iPhone", não é target macOS nativo — `IPHONEOS_DEPLOYMENT_TARGET` no pbxproj é a fonte da verdade) |
-| Linguagem | Swift 5.10+ |
-| UI | SwiftUI, Liquid Glass no chrome/status (`MBStatusPill` etc.) |
-| Persistência | SwiftData |
-| Bluetooth | CoreBluetooth (BLE apenas — Mi Band 10 não usa Classic BT) |
-| Saúde | HealthKit — única superfície de visualização de dados (ver ADR 0001) |
-| Automação | App Intents + Shortcuts |
-| Distribuição | Uso pessoal — sideload via Apple Developer Program pessoal (sem App Store) |
+| Platforms | iOS 26+ (a single Xcode target; runs on the Mac via "Designed for iPad and iPhone", it is not a native macOS target — `IPHONEOS_DEPLOYMENT_TARGET` in the pbxproj is the source of truth) |
+| Language | Swift 5.10+ |
+| UI | SwiftUI, Liquid Glass on chrome/status (`MBStatusPill` etc.) |
+| Persistence | SwiftData |
+| Bluetooth | CoreBluetooth (BLE only — the Mi Band 10 does not use Classic BT) |
+| Health | HealthKit — the only data visualization surface (see ADR 0001) |
+| Automation | App Intents + Shortcuts |
+| Distribution | Personal use — sideload via a personal Apple Developer Program account (no App Store) |
 
 ---
 
-## Arquitetura de Módulos
+## Module Architecture
 
 ```
 My Band/
 ├── App/
-│   ├── My_BandApp.swift          # Entry point, injeção de dependências globais
-│   └── AppDelegate.swift         # Ciclo de vida background BLE no iOS
+│   ├── My_BandApp.swift          # Entry point, global dependency injection
+│   └── AppDelegate.swift         # BLE background lifecycle on iOS
 │
 ├── BLE/
-│   ├── BandManager.swift         # Orquestrador central BLE (@Observable @MainActor NSObject)
-│   ├── BandScanner.swift         # Descoberta e filtragem de dispositivos Mi Band
-│   ├── BandAuthenticator.swift   # Handshake AES-128 com AuthKey
-│   ├── BandProtocol.swift        # Encoder/decoder de pacotes do protocolo Mi Band
-│   ├── BandSyncer.swift          # Sincronização de dados históricos (sono, steps, HR)
-│   ├── WorkoutGpsService.swift   # Handshake GPS durante treinos (band→app workoutOpenWatch)
-│   ├── FindPhoneService.swift    # "Encontrar telefone": alarme no iPhone (band→app CMD_FIND_PHONE)
-│   ├── CalendarSyncService.swift # Push app→band: idioma, calendário e lembretes (EventKit)
-│   ├── WeatherSyncService.swift  # Push app→band: tempo atual + previsão (Open-Meteo)
-│   ├── Scale/                    # Balança BLE OKOK/Chipsea (independente da pulseira)
-│   │   ├── ScaleManager.swift    # Escuta o anúncio (broadcast-only) e grava peso no Apple Health
-│   │   └── ScaleWeightParser.swift # Decode do peso (variante VC0)
+│   ├── BandManager.swift         # Central BLE orchestrator (@Observable @MainActor NSObject)
+│   ├── BandScanner.swift         # Discovery and filtering of Mi Band devices
+│   ├── BandAuthenticator.swift   # AES-128 handshake with AuthKey
+│   ├── BandProtocol.swift        # Mi Band protocol packet encoder/decoder
+│   ├── BandSyncer.swift          # Historical data sync (sleep, steps, HR)
+│   ├── WorkoutGpsService.swift   # GPS handshake during workouts (band→app workoutOpenWatch)
+│   ├── FindPhoneService.swift    # "Find phone": alarm on the iPhone (band→app CMD_FIND_PHONE)
+│   ├── CalendarSyncService.swift # Push app→band: language, calendar and reminders (EventKit)
+│   ├── WeatherSyncService.swift  # Push app→band: current weather + forecast (Open-Meteo)
+│   ├── Scale/                    # OKOK/Chipsea BLE scale (independent of the band)
+│   │   ├── ScaleManager.swift    # Listens to the advertisement (broadcast-only) and writes weight to Apple Health
+│   │   └── ScaleWeightParser.swift # Weight decode (VC0 variant)
 │   └── Services/
-│       ├── MiBandUUID.swift      # Constantes de UUID dos serviços GATT
-│       └── PacketParser/         # Parsers por tipo (sono, diário, manual, treinos+GPS, FC intra-treino)
+│       ├── MiBandUUID.swift      # GATT service UUID constants
+│       └── PacketParser/         # Parsers by type (sleep, daily, manual, workouts+GPS, intra-workout HR)
 │
 ├── Auth/
-│   ├── AuthKeyStore.swift        # Armazenamento seguro do AuthKey no Keychain
-│   ├── XiaomiCloudAuth.swift     # Extração do AuthKey via Xiaomi Cloud (login usuário/senha → beaconkey/token)
-│   └── XiaomiCloudCrypto.swift   # RC4/SHA-1/SHA-256 da API de conta (separado do XiaomiCrypto BLE)
+│   ├── AuthKeyStore.swift        # Secure AuthKey storage in the Keychain
+│   ├── XiaomiCloudAuth.swift     # AuthKey extraction via Xiaomi Cloud (username/password login → beaconkey/token)
+│   └── XiaomiCloudCrypto.swift   # RC4/SHA-1/SHA-256 of the account API (separate from the BLE XiaomiCrypto)
 │
 ├── Health/
-│   ├── HealthKitManager.swift    # Autorização e escrita no Apple Health
-│   └── HealthSyncService.swift  # Conversão dados Mi Band → tipos HealthKit
+│   ├── HealthKitManager.swift    # Authorization and writing to Apple Health
+│   └── HealthSyncService.swift  # Conversion of Mi Band data → HealthKit types
 │
 ├── Intents/
-│   ├── SyncBandIntent.swift      # App Intent: sincronizar dados agora
-│   ├── GetSleepStateIntent.swift # App Intent: "você está dormindo?" (pull, não push — ver nota)
-│   ├── CheckBandBatteryIntent.swift # App Intent: notifica só se a bateria estiver abaixo do limite
-│   └── BandShortcuts.swift       # AppShortcutsProvider com frases Siri
+│   ├── SyncBandIntent.swift      # App Intent: sync data now
+│   ├── GetSleepStateIntent.swift # App Intent: "am I asleep?" (pull, not push — see note)
+│   ├── CheckBandBatteryIntent.swift # App Intent: notifies only if the battery is below the threshold
+│   └── BandShortcuts.swift       # AppShortcutsProvider with Siri phrases
 │
-├── MiniApp/                      # (Fase futura) Mini app na pulseira
-│   └── README.md                 # Documentação do protocolo de mini apps
+├── MiniApp/                      # (Future phase) Mini app on the band
+│   └── README.md                 # Mini app protocol documentation
 │
 ├── Models/
-│   ├── BandDevice.swift          # SwiftData model do dispositivo pareado
-│   ├── SleepSession.swift        # SwiftData model de sessão de sono
-│   ├── ActivityDay.swift         # SwiftData model de atividade diária
-│   └── HeartRateSample.swift     # SwiftData model de amostras de HR
+│   ├── BandDevice.swift          # SwiftData model of the paired device
+│   ├── SleepSession.swift        # SwiftData model of a sleep session
+│   ├── ActivityDay.swift         # SwiftData model of daily activity
+│   └── HeartRateSample.swift     # SwiftData model of HR samples
 │
 └── UI/
-    ├── Dashboard/                # Tela principal com resumo de dados
-    ├── Setup/                    # Fluxo de configuração (AuthKey + HA)
-    ├── Sleep/                    # Visualização detalhada de sono
-    ├── Profile/                  # Perfil do usuário (altura → IMC no Apple Health)
-    ├── Customize/                # Watch faces e apps RPK
-    └── Settings/                 # Configurações gerais
+    ├── Dashboard/                # Main screen with data summary
+    ├── Setup/                    # Setup flow (AuthKey + HA)
+    ├── Sleep/                    # Detailed sleep visualization
+    ├── Profile/                  # User profile (height → BMI in Apple Health)
+    ├── Customize/                # Watch faces and RPK apps
+    └── Settings/                 # General settings
 ```
 
 ---
 
-## Protocolo BLE da Mi Band 10
+## Mi Band 10 BLE Protocol
 
-> **Protocolo confirmado via GadgetBridge** (`XiaomiSppPacketV2`, `XiaomiAuthService`, `MiBand10Coordinator`).
-> Implementação anterior (AES-128-ECB + UUIDs FEE0/FEE1) era para Mi Band 5/6 e foi descartada.
+> **Protocol confirmed via GadgetBridge** (`XiaomiSppPacketV2`, `XiaomiAuthService`, `MiBand10Coordinator`).
+> The earlier implementation (AES-128-ECB + UUIDs FEE0/FEE1) was for the Mi Band 5/6 and was discarded.
 
-### Serviços e Características (BLE V2)
+### Services and Characteristics (BLE V2)
 
-| UUID | Função |
+| UUID | Function |
 |---|---|
-| `0000FE95-0000-1000-8000-00805F9B34FB` | Xiaomi BLE V2 Service (único serviço relevante) |
-| `0000005E-0000-1000-8000-00805F9B34FB` | TX — write (app → banda, sem resposta) |
-| `0000005F-0000-1000-8000-00805F9B34FB` | RX — notify (banda → app) |
-| `0000180D-0000-1000-8000-00805F9B34FB` | Heart Rate Service (GATT padrão) |
-| `0000180F-0000-1000-8000-00805F9B34FB` | Battery Service (GATT padrão) — o que o iOS lê para o widget Baterias |
-| `00002A19-0000-1000-8000-00805F9B34FB` | Battery Level — `UInt8` 0–100, read + notify (lido **só pós-auth**, ver `CheckBandBatteryIntent`) |
+| `0000FE95-0000-1000-8000-00805F9B34FB` | Xiaomi BLE V2 Service (the only relevant service) |
+| `0000005E-0000-1000-8000-00805F9B34FB` | TX — write (app → band, without response) |
+| `0000005F-0000-1000-8000-00805F9B34FB` | RX — notify (band → app) |
+| `0000180D-0000-1000-8000-00805F9B34FB` | Heart Rate Service (standard GATT) |
+| `0000180F-0000-1000-8000-00805F9B34FB` | Battery Service (standard GATT) — what iOS reads for the Batteries widget |
+| `00002A19-0000-1000-8000-00805F9B34FB` | Battery Level — `UInt8` 0–100, read + notify (read **only post-auth**, see `CheckBandBatteryIntent`) |
 
-### Formato de Frame — XiaomiSppPacketV2
+### Frame Format — XiaomiSppPacketV2
 
-Cabeçalho de 8 bytes (confirmado em `XiaomiSppPacketV2.java`; ver `BandProtocol.swift`):
+8-byte header (confirmed in `XiaomiSppPacketV2.java`; see `BandProtocol.swift`):
 
 ```
 [0xA5][0xA5]   preamble (2 bytes)
 [type]         lower 4 bits = packetType: 1=ACK, 2=SESSION_CONFIG, 3=DATA
-[seqNum]       contador de sequência (UInt8)
-[lenLo][lenHi] comprimento do payload (UInt16 LE)
-[crcLo][crcHi] CRC-16/ARC do PAYLOAD apenas (poly=0x8005, refin/refout, init=0)
-[payload...]   bytes do payload
+[seqNum]       sequence counter (UInt8)
+[lenLo][lenHi] payload length (UInt16 LE)
+[crcLo][crcHi] CRC-16/ARC of the PAYLOAD only (poly=0x8005, refin/refout, init=0)
+[payload...]   payload bytes
 ```
 
-Payload de um pacote DATA (dentro do payload acima):
+Payload of a DATA packet (inside the payload above):
 ```
 [channel]  lower 4 bits: 1=PROTOBUF, 2=DATA, 5=ACTIVITY
-[opCode]   1=PLAINTEXT, 2=ENCRYPTED (AES-CTR, encryptV2/decryptV2 com IV=key)
-[bytes...] Command protobuf (ou bytes cifrados, se opCode=2)
+[opCode]   1=PLAINTEXT, 2=ENCRYPTED (AES-CTR, encryptV2/decryptV2 with IV=key)
+[bytes...] Command protobuf (or ciphered bytes, if opCode=2)
 ```
 
-**Transporte confiável (janela/ACK).** O SPP V2 negocia `TX_WIN` e numera os pacotes. **Toda frame DATA recebida da pulseira precisa ser confirmada** com um pacote ACK (`type=1`) carregando o mesmo `seqNum` (`BandManager.sendAck`). Sem ACK, a pulseira assume perda e retransmite o handshake inteiro a cada ~6 s. Pacotes DATA enviados pelo app usam um contador próprio incremental (`nextSeq`).
+**Reliable transport (window/ACK).** SPP V2 negotiates `TX_WIN` and numbers the packets. **Every DATA frame received from the band must be confirmed** with an ACK packet (`type=1`) carrying the same `seqNum` (`BandManager.sendAck`). Without an ACK, the band assumes loss and retransmits the entire handshake every ~6 s. DATA packets sent by the app use their own incrementing counter (`nextSeq`).
 
-**Protobuf via SwiftProtobuf.** As mensagens `Command`, `Auth`, `WatchNonce`, `Health`, `System`, etc. vêm dos tipos gerados em `BLE/Protocol/xiaomi.pb.swift` (gerados do `xiaomi.proto` do GadgetBridge). `XiaomiProto.swift` é só a camada fina de builders/parsers.
+**Protobuf via SwiftProtobuf.** The `Command`, `Auth`, `WatchNonce`, `Health`, `System`, etc. messages come from the types generated in `BLE/Protocol/xiaomi.pb.swift` (generated from GadgetBridge's `xiaomi.proto`). `XiaomiProto.swift` is just the thin layer of builders/parsers.
 
-### Fluxo de Autenticação (HMAC-SHA256 V2)
+### Authentication Flow (HMAC-SHA256 V2)
 
-1. **Conectar** ao dispositivo BLE (nome `Xiaomi Smart Band 10 XXXX`)
-2. **Descobrir** serviço `FE95` → características `005E` (TX) e `005F` (RX)
-3. **Habilitar notificações** em `005F`
-4. **Session config**: enviar `Command{type=0, sub=1, payload={mtu=512, version=2}}` no canal COMMAND
-5. **CMD_NONCE** (type=1, sub=26): enviar 16 bytes de nonce aleatório do app
-6. **Banda responde**: `watchNonce(16) + HMAC-SHA256(watchNonce+phoneNonce, secretKey)(32)`
-7. **Verificar HMAC** da banda
-8. **Derivar chaves de sessão**:
+1. **Connect** to the BLE device (name `Xiaomi Smart Band 10 XXXX`)
+2. **Discover** service `FE95` → characteristics `005E` (TX) and `005F` (RX)
+3. **Enable notifications** on `005F`
+4. **Session config**: send `Command{type=0, sub=1, payload={mtu=512, version=2}}` on the COMMAND channel
+5. **CMD_NONCE** (type=1, sub=26): send 16 bytes of random nonce from the app
+6. **Band responds**: `watchNonce(16) + HMAC-SHA256(watchNonce+phoneNonce, secretKey)(32)`
+7. **Verify the band's HMAC**
+8. **Derive session keys**:
    ```
    prk = HMAC-SHA256(phoneNonce + watchNonce, secretKey)
    keys[0..63] = HKDF-expand(prk, "miwear-auth", 64)
@@ -139,295 +139,295 @@ Payload de um pacote DATA (dentro do payload acima):
    ```
 9. **CMD_AUTH** (type=1, sub=27): `authStep3 { encryptedNonces = HMAC-SHA256(phoneNonce+watchNonce, encKey), encryptedDeviceInfo = AES-128-CCM(authDeviceInfo) }`
    - CCM nonce = `encryptionNonce(4) || zeros(4) || counter=0(4)`
-   - Comunicação pós-auth usa AES-CTR com peculiaridade V2: **IV = key** (GadgetBridge: "I wish I was kidding")
-10. **Banda responde** `sub=27` → **Autenticado**, comunicação cifrada
-11. **Init pós-auth obrigatório** (`sendPostAuthInit`): `setCurrentTime` + `device info (2/2)` + `device state (2/78)` + `battery (2/1)`. Sem isso a banda re-dispara auth a cada ~6 s.
+   - Post-auth communication uses AES-CTR with a V2 peculiarity: **IV = key** (GadgetBridge: "I wish I was kidding")
+10. **Band responds** `sub=27` → **Authenticated**, encrypted communication
+11. **Mandatory post-auth init** (`sendPostAuthInit`): `setCurrentTime` + `device info (2/2)` + `device state (2/78)` + `battery (2/1)`. Without it the band re-triggers auth every ~6 s.
 
-> **Primeiro pareamento — o app espera o usuário, por dois prompts e através da queda de link entre eles** (decisão e trade-offs em `docs/adr/0003-patient-band-driven-handshake.md`, incluindo o adendo de 2026-09-09)**.** A primeira conexão pede **duas** confirmações, em ordem e em telas diferentes: a pulseira levanta o próprio diálogo (`auth sub=16`, subtype que o GadgetBridge nem trata) e só depois o iOS levanta a folha de pareamento Bluetooth — e para estabelecer o bond o **iOS derruba a conexão**. Por isso a espera é um **deadline de 180 s (`pairingDeadline`) que atravessa conexões**, não um estado da conexão corrente: `resetState` limpa só o flag por conexão e `startNonceExchange` restaura a espera ao reconectar dentro da janela. Enquanto ela está aberta: HMAC divergente é esperado (a pulseira assina com um bond que ainda não existe) e apenas estende a janela, o watchdog se re-arma, e o orçamento de `retryAuthAfterReconnect` **não é gasto** — um pareamento demorado não pode terminar em `badHMAC` ("AuthKey incorreto"). Uma divergência numa pulseira contra a qual nunca autenticamos (`everAuthenticated`, `UserDefaults`) inicia a espera em vez de contá-la. `CBATTError.insufficientAuthentication` num write **não é falha**: é o iOS avisando que vai pedir o pareamento — é o único sinal concreto do segundo prompt, e antes matava o handshake no instante em que a folha subia. `CBError.peerRemovedPairingInformation` → `AuthError.staleBond` (esquecer o dispositivo em Ajustes › Bluetooth; reconectar nunca resolve). `PairingStage` (`.band` → `.phone`, só avança) alimenta o checklist de dois passos da tela de conexão e **não decide lógica de protocolo**. O `sub=16` e as divergências pré-aceite estão confirmados em hardware (Mi Band 10, 2026-06-19 e 2026-09-05); o caminho **completo do aceite** ainda **não** foi exercitado — os logs vieram de uma pulseira já pareada e de tentativas que falhavam.
+> **First pairing — the app waits for the user, through two prompts and across the link drop between them** (decision and trade-offs in `docs/adr/0003-patient-band-driven-handshake.md`, including the 2026-09-09 addendum)**.** The first connection asks for **two** confirmations, in order and on different screens: the band raises its own dialog (`auth sub=16`, a subtype GadgetBridge doesn't even handle) and only then does iOS raise the Bluetooth pairing sheet — and to establish the bond **iOS drops the connection**. That is why the wait is a **180 s deadline (`pairingDeadline`) that spans connections**, not a state of the current connection: `resetState` clears only the per-connection flag and `startNonceExchange` restores the wait when reconnecting within the window. While it is open: a mismatched HMAC is expected (the band signs with a bond that doesn't exist yet) and only extends the window, the watchdog re-arms, and the `retryAuthAfterReconnect` budget is **not spent** — a long pairing cannot end in `badHMAC` ("Incorrect AuthKey"). A mismatch on a band we have never authenticated against (`everAuthenticated`, `UserDefaults`) starts the wait instead of counting it. `CBATTError.insufficientAuthentication` on a write is **not a failure**: it is iOS warning that it is going to ask for pairing — the only concrete signal of the second prompt, and it used to kill the handshake the instant the sheet came up. `CBError.peerRemovedPairingInformation` → `AuthError.staleBond` (forget the device in Settings › Bluetooth; reconnecting never fixes it). `PairingStage` (`.band` → `.phone`, only advances) feeds the two-step checklist on the connection screen and **does not decide protocol logic**. `sub=16` and the pre-accept mismatches are confirmed on hardware (Mi Band 10, 2026-06-19 and 2026-09-05); the **complete accept path** has **not** yet been exercised — the logs came from an already-paired band and from attempts that failed.
 
-> **A pulseira reabre a sessão sozinha — e isso invalida as chaves.** Logo depois do init pós-auth ela manda um novo `session-config-accept`, zera o próprio contador de sequência e refaz o handshake (novo watch-nonce, novo `sub=27`). O GadgetBridge (`XiaomiBleProtocolV2.processPacket`, `PACKET_TYPE_SESSION_CONFIG`) chama `startEncryptedHandshake()` a **todo** pacote de session config, sem olhar estado — é por isso. Ignorar esse pacote deixa o app com as chaves antigas: a pulseira ACKa o frame de transporte e **descarta o comando em silêncio**, então o sync fica pendurado até o timeout com o link parecendo perfeito. `handleSessionConfigResponse` refaz o handshake quando o estado é `.connected` (limite `maxBandSessionRestarts`), e só ignora um repeat que chegue com o handshake ainda em voo (`.authenticating`) — que é onde morava o bug do 005F. Confirmado em hardware (2026-09-05).
+> **The band reopens the session on its own — and that invalidates the keys.** Right after the post-auth init it sends a new `session-config-accept`, resets its own sequence counter and redoes the handshake (new watch-nonce, new `sub=27`). GadgetBridge (`XiaomiBleProtocolV2.processPacket`, `PACKET_TYPE_SESSION_CONFIG`) calls `startEncryptedHandshake()` on **every** session-config packet, regardless of state — that's why. Ignoring this packet leaves the app with the old keys: the band ACKs the transport frame and **silently discards the command**, so the sync hangs until the timeout with the link looking perfect. `handleSessionConfigResponse` redoes the handshake when the state is `.connected` (limit `maxBandSessionRestarts`), and only ignores a repeat that arrives with the handshake still in flight (`.authenticating`) — which is where the 005F bug lived. Confirmed on hardware (2026-09-05).
 >
-> **O restart cai exatamente onde o sync começa.** `ensureConnected` resolve na primeira auth, então um sync que abriu o link manda o `FETCH_TODAY` na janela do restart — e ele se perde. `BandManager.onSessionRestart` avisa o `BandSyncer`, que faz a troca de comando em voo falhar na hora (`SyncError.sessionRestarted`) e a reenvia após o re-handshake (`surviveSessionRestart` + `BandManager.awaitSession`), para listagens e arquivos. `ensureConnected` chamado com um handshake em andamento só espera (reconectar por cima refazia a descoberta de serviços e disparava um segundo `authenticate()`). Passado o `maxBandSessionRestarts`, o link é derrubado para o standing reconnect recomeçar limpo.
+> **The restart lands exactly where the sync begins.** `ensureConnected` resolves on the first auth, so a sync that opened the link sends `FETCH_TODAY` in the restart window — and it gets lost. `BandManager.onSessionRestart` notifies the `BandSyncer`, which makes the in-flight command exchange fail immediately (`SyncError.sessionRestarted`) and resends it after the re-handshake (`surviveSessionRestart` + `BandManager.awaitSession`), for listings and files. `ensureConnected` called with a handshake in progress only waits (reconnecting on top of it redid service discovery and fired a second `authenticate()`). Past `maxBandSessionRestarts`, the link is dropped so the standing reconnect starts clean.
 
-> **Nonce atrasado ≠ falha.** Depois do `CMD_AUTH`, a banda reemite um watch-nonce próprio — um reinício de handshake do lado dela, não uma resposta ao nosso. Verificá-lo contra o phone-nonce já superado **sempre** falha; a banda confirma o handshake original de qualquer forma. `authStep3Sent` faz o app ignorar nonces com `CMD_AUTH` em voo e esperar o `sub=27`. Pelo mesmo motivo (um nonce já no ar quando o nosso `CMD_NONCE` saiu foi assinado contra um phone-nonce que a banda ainda não viu), `maxNonceMismatches` tolera 2 divergências por troca de nonce antes de escalar — uma AuthKey de fato errada diverge sempre e continua terminando em `AuthError.badHMAC`. Sem isso, o mesmo pacote derrubava um handshake a um passo do sucesso (log de hardware 2026-09-05, onde as duas ordens aparecem: o nonce atrasado antes do `sub=27` matava a conexão, depois do `sub=27` era inofensivo).
+> **Late nonce ≠ failure.** After `CMD_AUTH`, the band re-emits a watch-nonce of its own — a handshake restart on its side, not a response to ours. Verifying it against the already-superseded phone-nonce **always** fails; the band confirms the original handshake anyway. `authStep3Sent` makes the app ignore nonces with `CMD_AUTH` in flight and wait for `sub=27`. For the same reason (a nonce already in the air when our `CMD_NONCE` went out was signed against a phone-nonce the band hasn't seen yet), `maxNonceMismatches` tolerates 2 mismatches per nonce exchange before escalating — a genuinely wrong AuthKey always diverges and still ends in `AuthError.badHMAC`. Without that, the same packet brought down a handshake one step from success (2026-09-05 hardware log, where both orders appear: the late nonce before `sub=27` killed the connection, after `sub=27` it was harmless).
 
-> **Watchdog de auth.** `armAuthWatchdog()` — 20 s normal, 120 s durante o pareamento — re-armado por todo pacote de auth que progride. Antes, `AuthError.timeout` só saía de uma desconexão: "Tempo esgotado" na verdade queria dizer "o link caiu" (hoje `AuthError.linkDropped`) e uma banda que emudecesse ficava pendurada. Ao estourar **fora** de um pareamento, o watchdog derruba o link para que o standing reconnect reassuma; dentro da janela de pareamento ele apenas se re-arma (silêncio ali é uma pessoa lendo um diálogo) e só falha quando a janela vence, com `AuthError.pairingNotConfirmed`. `retryAuthAfterReconnect` adia o teardown com atraso crescente (1–4 s) — reconectar na hora gastava as 4 tentativas em segundos.
+> **Auth watchdog.** `armAuthWatchdog()` — 20 s normal, 120 s during pairing — re-armed by every auth packet that makes progress. Before, `AuthError.timeout` only came out of a disconnection: "Timed out" actually meant "the link dropped" (now `AuthError.linkDropped`) and a band that went silent hung. When it fires **outside** a pairing, the watchdog drops the link so the standing reconnect takes over; inside the pairing window it only re-arms (silence there is a person reading a dialog) and only fails when the window expires, with `AuthError.pairingNotConfirmed`. `retryAuthAfterReconnect` postpones the teardown with an increasing delay (1–4 s) — reconnecting immediately burned the 4 attempts in seconds.
 
-> O AuthKey (secretKey) tem 16 bytes (hex 32 chars). Keychain com `kSecAttrAccessibleAfterFirstUnlock`. Nunca em SwiftData/UserDefaults/logs. Nonces e HMACs **podem** ser logados em debug (não são segredos); chaves de sessão e AuthKey, nunca.
+> The AuthKey (secretKey) is 16 bytes (32 hex chars). Keychain with `kSecAttrAccessibleAfterFirstUnlock`. Never in SwiftData/UserDefaults/logs. Nonces and HMACs **may** be logged in debug (they are not secrets); session keys and the AuthKey, never.
 
-> **A chave precisa sobreviver a updates, renomeações e relaunches** (ver `docs/adr/0004-authkey-keychain-durability.md`)**.** `AuthKeyStore` indexa o item por um `service` **fixo** (`com.myband.authkey`), não pelo bundle id lido em runtime — senão uma renomeação de bundle/target faria o app se apresentar como não pareado com a chave intacta sob o nome antigo; o item legado (bundle id) é migrado na primeira leitura. `save` atualiza no lugar (o `delete`+`add` anterior perdia a chave se o add falhasse) e o item é fixado como **não-sincronizável**, para que nenhuma entrada do iCloud Keychain sombreie a local. `isStored` distingue `errSecItemNotFound` de `errSecInteractionNotAllowed`: num relaunch em background **antes do primeiro desbloqueio pós-boot** a chave existe mas é ilegível, e responder "não tem chave" ali mandava um usuário já pareado de volta ao setup.
+> **The key must survive updates, renames and relaunches** (see `docs/adr/0004-authkey-keychain-durability.md`)**.** `AuthKeyStore` indexes the item by a **fixed** `service` (`com.myband.authkey`), not by the bundle id read at runtime — otherwise a bundle/target rename would make the app present itself as unpaired with the key intact under the old name; the legacy item (bundle id) is migrated on first read. `save` updates in place (the earlier `delete`+`add` lost the key if the add failed) and the item is pinned as **non-synchronizable**, so that no iCloud Keychain entry shadows the local one. `isStored` distinguishes `errSecItemNotFound` from `errSecInteractionNotAllowed`: on a background relaunch **before the first unlock after boot** the key exists but is unreadable, and answering "no key" there sent an already-paired user back to setup.
 
-### Comandos de Sincronização
+### Sync Commands
 
-| Command | type | subtype | Descrição |
+| Command | type | subtype | Description |
 |---|---|---|---|
-| Fetch today | 8 | 1 | Lista os file-ids de atividade pendentes do dia |
-| Fetch past | 8 | 2 | Lista o backlog de dias ainda não sincronizados |
-| Fetch request | 8 | 3 | Solicita o conteúdo de um file-id (stream em chunks) |
-| Fetch ACK | 8 | 5 | Marca um file-id como sincronizado |
+| Fetch today | 8 | 1 | Lists the day's pending activity file-ids |
+| Fetch past | 8 | 2 | Lists the backlog of days not yet synced |
+| Fetch request | 8 | 3 | Requests the content of a file-id (streamed in chunks) |
+| Fetch ACK | 8 | 5 | Marks a file-id as synced |
 
-### Comandos iniciados pela pulseira (band → app)
+### Band-initiated commands (band → app)
 
-Alguns recursos são **push** da pulseira: ela manda o comando e o app reage. `BandManager` os decodifica após auth e dispara callbacks (`onWorkoutOpenWatch`, `onWorkoutStatusWatch`, `onFindPhone`, `onWeatherConditionsRequest`), consumidos por serviços dedicados.
+Some features are **push** from the band: it sends the command and the app reacts. `BandManager` decodes them after auth and fires callbacks (`onWorkoutOpenWatch`, `onWorkoutStatusWatch`, `onFindPhone`, `onWeatherConditionsRequest`), consumed by dedicated services.
 
-| Comando | type | subtype | Quem trata | Reação |
+| Command | type | subtype | Handled by | Reaction |
 |---|---|---|---|---|
-| `CMD_FIND_PHONE` | 2 (SYSTEM) | 17 | `FindPhoneService` | `system.findDevice` 0=iniciar / ≠0=parar. Alarme: `AVAudioSession.playback` + sirene em loop sintetizada + vibração + notificação. Auto-stop em 45 s. |
-| `workoutOpenWatch` | 8 (HEALTH) | 30 | `WorkoutGpsService` | Inicia CoreLocation e responde GPS ready/disabled |
-| `workoutStatusWatch` | 8 (HEALTH) | 26 | `WorkoutGpsService` | started/resumed/paused/finished → controla o stream de GPS (paused para de transmitir); ao **finished** dispara `onWorkoutFinished(fileIds)` → `BandSyncer.syncWorkoutFiles` busca os arquivos nomeados (resumo + rota GPS) |
-| `CMD_REQUEST_CONDITIONS_FOR_LOCATION` | 10 (WEATHER) | 3 | `WeatherSyncService` | Banda pede o tempo (ao conectar / abrir a tela de tempo) → app responde com push de tempo, ecoando a chave/nome de localização pedida. Ver "Configuração enviada à pulseira". |
+| `CMD_FIND_PHONE` | 2 (SYSTEM) | 17 | `FindPhoneService` | `system.findDevice` 0=start / ≠0=stop. Alarm: `AVAudioSession.playback` + synthesized looping siren + vibration + notification. Auto-stop after 45 s. |
+| `workoutOpenWatch` | 8 (HEALTH) | 30 | `WorkoutGpsService` | Starts CoreLocation and replies GPS ready/disabled |
+| `workoutStatusWatch` | 8 (HEALTH) | 26 | `WorkoutGpsService` | started/resumed/paused/finished → controls the GPS stream (paused stops transmitting); on **finished** it fires `onWorkoutFinished(fileIds)` → `BandSyncer.syncWorkoutFiles` fetches the named files (summary + GPS route) |
+| `CMD_REQUEST_CONDITIONS_FOR_LOCATION` | 10 (WEATHER) | 3 | `WeatherSyncService` | Band asks for the weather (on connect / opening the weather screen) → app replies with a weather push, echoing the requested location key/name. See "Configuration sent to the band". |
 
-> **O fim de treino dispara um sync automático e direcionado.** `workoutStatusWatch` status=finished **carrega os `activityFileIds`** do treino recém-gravado (resumo + rota GPS). `BandManager` os repassa no callback (`onWorkoutStatusWatch(status, fileIds)`) → `WorkoutGpsService.onWorkoutFinished(fileIds)` → `BandSyncer` aguarda ~8 s (flush do arquivo pela pulseira) e roda `syncWorkoutFiles(_:)` se ainda conectado, buscando/parseando/gravando/ACKando **exatamente** esses arquivos — sem relistar o backlog (FETCH_TODAY/PAST). Firmware que omita os ids cai no `syncToHealth()` completo. O loop de processamento por arquivo é compartilhado em `BandSyncer.processActivityFiles`. Totais diários, que o treino também atualiza, ficam para o próximo sync regular.
+> **The end of a workout triggers an automatic, targeted sync.** `workoutStatusWatch` status=finished **carries the `activityFileIds`** of the workout just recorded (summary + GPS route). `BandManager` passes them on in the callback (`onWorkoutStatusWatch(status, fileIds)`) → `WorkoutGpsService.onWorkoutFinished(fileIds)` → `BandSyncer` waits ~8 s (the band flushing the file) and runs `syncWorkoutFiles(_:)` if still connected, fetching/parsing/writing/ACKing **exactly** those files — without relisting the backlog (FETCH_TODAY/PAST). Firmware that omits the ids falls back to the full `syncToHealth()`. The per-file processing loop is shared in `BandSyncer.processActivityFiles`. Daily totals, which the workout also updates, are left for the next regular sync.
 >
-> **Não há trigger equivalente para "acordar".** A Mi Band 10 não envia um evento de fim de sono; o sono só é buscado quando o app roda o fetch (foreground ou `BackgroundSyncManager`). Fora do fim de treino, o modelo continua sendo **pull**: o app reconecta e busca os file-ids pendentes.
+> **There is no equivalent trigger for "waking up".** The Mi Band 10 does not send a sleep-end event; sleep is only fetched when the app runs the fetch (foreground or `BackgroundSyncManager`). Outside the end of a workout, the model remains **pull**: the app reconnects and fetches the pending file-ids.
 
-### Configuração enviada à pulseira (app → band)
+### Configuration sent to the band (app → band)
 
-`CalendarSyncService` (idioma/calendário/lembretes) e `WeatherSyncService` (tempo, via Open-Meteo) fazem push cifrado ao final de `BandSyncer.syncToHealth()`, junto com os dados de saúde/exercícios e enquanto o link está ativo (best-effort — não derruba o sync de saúde). Cada seção é independente — uma permissão negada ou falta de rede não bloqueia as outras.
+`CalendarSyncService` (language/calendar/reminders) and `WeatherSyncService` (weather, via Open-Meteo) do an encrypted push at the end of `BandSyncer.syncToHealth()`, together with the health/exercise data and while the link is up (best-effort — it does not bring down the health sync). Each section is independent — a denied permission or a lack of network does not block the others.
 
-| Dado | type | subtype | Proto | Origem / observações |
+| Data | type | subtype | Proto | Source / notes |
 |---|---|---|---|---|
-| Idioma | 2 (SYSTEM) | 6 `CMD_LANGUAGE` | `system.language.code` | `Locale` → `"pt_br"` minúsculo |
-| Calendário | 12 | 1 `CMD_CALENDAR_SET` | `calendar.calendarSync.event[]` | EventKit, próximos 30 dias, ≤50, **substitui** o set na banda |
-| Lembrete (criar) | 17 (SCHEDULE) | 15 `CMD_REMINDERS_CREATE` | `schedule.createReminder` | EventKit, com data, ≤20 |
-| Lembrete (apagar) | 17 | 18 `CMD_REMINDERS_DELETE` | `schedule.deleteReminder.id[]` | apaga os ids do sync anterior antes de recriar |
-| Tempo (localização) | 10 | 7 `CMD_ADD_LOCATION` | `weather.location` | `WeatherSyncService`, chave `accu:<hash>` |
-| Tempo (atual) | 10 | 0 `CMD_SET_CURRENT_WEATHER` | `weather.current` | Open-Meteo, Guarapuava |
-| Tempo (previsão) | 10 | 1 `CMD_UPDATE_DAILY_FORECAST` | `weather.forecast` | 7 dias (hoje + 6) |
+| Language | 2 (SYSTEM) | 6 `CMD_LANGUAGE` | `system.language.code` | `Locale` → lowercase `"pt_br"` |
+| Calendar | 12 | 1 `CMD_CALENDAR_SET` | `calendar.calendarSync.event[]` | EventKit, next 30 days, ≤50, **replaces** the set on the band |
+| Reminder (create) | 17 (SCHEDULE) | 15 `CMD_REMINDERS_CREATE` | `schedule.createReminder` | EventKit, with a due date, ≤20 |
+| Reminder (delete) | 17 | 18 `CMD_REMINDERS_DELETE` | `schedule.deleteReminder.id[]` | deletes the previous sync's ids before recreating |
+| Weather (location) | 10 | 7 `CMD_ADD_LOCATION` | `weather.location` | `WeatherSyncService`, key `accu:<hash>` |
+| Weather (current) | 10 | 0 `CMD_SET_CURRENT_WEATHER` | `weather.current` | Open-Meteo, Guarapuava |
+| Weather (forecast) | 10 | 1 `CMD_UPDATE_DAILY_FORECAST` | `weather.forecast` | 7 days (today + 6) |
 
-> **O tempo é request-driven — a pulseira pede, o app responde.** A Mi Band 10 envia `CMD_REQUEST_CONDITIONS_FOR_LOCATION` (type=10, subtype=3) ao conectar e ao abrir a tela de tempo; a tela fica **aguardando a resposta a esse request**, então o push proativo (ao fim do `syncToHealth()`) sozinho não popula o widget. `BandManager.handleWeatherCommand` roteia subtype=3 para o callback `onWeatherConditionsRequest`, e `WeatherSyncService` responde com um push completo (location → current → forecast). A resposta **ecoa a chave/nome de localização que a banda pediu** (`requestedKey`/`requestedName`) para que ela vincule os dados; sem request, o push usa a localização padrão com `isCurrentLocation=true`. Status≠0 das respostas da banda aos nossos pushes (subtypes 0/1/7) é logado. Espelha `XiaomiWeatherService.onConditionRequestReceived` do GadgetBridge.
+> **Weather is request-driven — the band asks, the app answers.** The Mi Band 10 sends `CMD_REQUEST_CONDITIONS_FOR_LOCATION` (type=10, subtype=3) on connect and when opening the weather screen; the screen **waits for the response to that request**, so the proactive push (at the end of `syncToHealth()`) alone does not populate the widget. `BandManager.handleWeatherCommand` routes subtype=3 to the `onWeatherConditionsRequest` callback, and `WeatherSyncService` replies with a full push (location → current → forecast). The reply **echoes the location key/name the band asked for** (`requestedKey`/`requestedName`) so it can bind the data; without a request, the push uses the default location with `isCurrentLocation=true`. Status≠0 in the band's responses to our pushes (subtypes 0/1/7) is logged. Mirrors GadgetBridge's `XiaomiWeatherService.onConditionRequestReceived`.
 
-> **Id de lembrete é atribuído pela banda.** O create não carrega id; a banda responde com `schedule.ackId` (type=17). `BandManager.onScheduleAck` captura esses ids, que `CalendarSyncService` persiste (`UserDefaults`) e usa para apagar no próximo sync — sem isso os lembretes acumulariam na pulseira.
+> **The reminder id is assigned by the band.** The create carries no id; the band replies with `schedule.ackId` (type=17). `BandManager.onScheduleAck` captures those ids, which `CalendarSyncService` persists (`UserDefaults`) and uses to delete on the next sync — without that, reminders would pile up on the band.
 
-> **Frames > MTU.** Calendário com muitos eventos passa do ATT MTU. `BandManager.writeSPP` fragmenta a frame em chunks do tamanho do MTU (`maximumWriteValueLength`); a banda reassembla pelo comprimento declarado na frame. Pacotes de auth/init cabem em um chunk — caminho do handshake inalterado.
+> **Frames > MTU.** A calendar with many events exceeds the ATT MTU. `BandManager.writeSPP` fragments the frame into MTU-sized chunks (`maximumWriteValueLength`); the band reassembles using the length declared in the frame. Auth/init packets fit in one chunk — the handshake path is unchanged.
 
-O mesmo mecanismo de file-ids serve **todos** os tipos de dado — cada id de 7 bytes (`XiaomiActivityFileMeta`) declara seu tipo/subtype/detailType, e `BandSyncer.syncToHealth()` roteia para o parser certo:
+The same file-id mechanism serves **all** data types — each 7-byte id (`XiaomiActivityFileMeta`) declares its type/subtype/detailType, and `BandSyncer.syncToHealth()` routes to the right parser:
 
-| Tipo de arquivo | subtype | Parser |
+| File type | subtype | Parser |
 |---|---|---|
-| Resumo diário | `0x00` SUMMARY | `DailySummaryParser` |
-| Detalhe diário (por minuto) | `0x00` DETAILS | `DailyDetailsParser` |
-| Sono (por duração) | `0x08` (qualquer detail) | `SleepDetailsParser` (ver nota) |
-| Sono (por transição) | `0x03` DETAILS | `SleepStagesParser` (ver nota) |
-| Medições manuais | `0x06` | `ManualSamplesParser` |
-| Treino (resumo) | SPORTS · SUMMARY | `WorkoutSummaryParser` |
-| Treino (rota GPS) | SPORTS · GPS | `WorkoutGpsParser` |
-| Treino (detalhe FC/seg) | SPORTS · DETAILS | `WorkoutDetailsParser` |
+| Daily summary | `0x00` SUMMARY | `DailySummaryParser` |
+| Daily detail (per minute) | `0x00` DETAILS | `DailyDetailsParser` |
+| Sleep (by duration) | `0x08` (any detail) | `SleepDetailsParser` (see note) |
+| Sleep (by transition) | `0x03` DETAILS | `SleepStagesParser` (see note) |
+| Manual measurements | `0x06` | `ManualSamplesParser` |
+| Workout (summary) | SPORTS · SUMMARY | `WorkoutSummaryParser` |
+| Workout (GPS route) | SPORTS · GPS | `WorkoutGpsParser` |
+| Workout (per-second HR detail) | SPORTS · DETAILS | `WorkoutDetailsParser` |
 
-> **Série de FC por segundo do treino (`WorkoutDetailsParser`).** Durante o treino a pulseira grava um arquivo `SPORTS · DETAILS` (subtype `0x08`) com **uma amostra de FC por segundo**. O GadgetBridge **não** parseia isso (`XiaomiActivityParser.createForSports` só trata `SUMMARY`/`GPS_TRACK` e descarta o resto), então o layout foi revertido de uma captura real (Mi Band 10, 2026-06-23, version 3) e validado por CRC-32: `[id:7][pad:1][header:11]` com a duração (s) em `u16@10` (== nº de amostras), seguido de `duração` amostras `[fc:u8][flag:u8][00][00]`, 1 Hz a partir do início (fc=0 nos ~18 s de aquisição do sensor; `flag=1` a cada ~12 amostras, um keyframe — ignorado). `BandSyncer` casa a série ao treino pelo timestamp (igual à rota GPS) e `HealthKitManager.writeWorkouts` anexa as amostras ao `HKWorkout` (no builder, antes do `finishWorkout`, sync-id por amostra). Só version 3 confirmada; outras versões → série vazia (o arquivo ainda é ACKado). Para outros subtypes/versões de `SPORTS · DETAILS` (ex.: `0x16`, version 5) o parser devolve vazio e o `else` de `processActivityFiles` apenas ACKa — sem o ACK a pulseira re-oferece o arquivo a cada conexão (re-download perpétuo; um deles tinha 12 KB). Novas fixtures: `dumpActivityFileFixture` (DEBUG).
+> **Per-second workout HR series (`WorkoutDetailsParser`).** During a workout the band records a `SPORTS · DETAILS` file (subtype `0x08`) with **one HR sample per second**. GadgetBridge does **not** parse this (`XiaomiActivityParser.createForSports` only handles `SUMMARY`/`GPS_TRACK` and discards the rest), so the layout was reverse-engineered from a real capture (Mi Band 10, 2026-06-23, version 3) and validated by CRC-32: `[id:7][pad:1][header:11]` with the duration (s) in `u16@10` (== number of samples), followed by `duration` samples `[hr:u8][flag:u8][00][00]`, 1 Hz from the start (hr=0 during the ~18 s of sensor acquisition; `flag=1` every ~12 samples, a keyframe — ignored). `BandSyncer` matches the series to the workout by timestamp (same as the GPS route) and `HealthKitManager.writeWorkouts` attaches the samples to the `HKWorkout` (in the builder, before `finishWorkout`, sync-id per sample). Only version 3 is confirmed; other versions → empty series (the file is still ACKed). For other `SPORTS · DETAILS` subtypes/versions (e.g. `0x16`, version 5) the parser returns empty and the `else` branch of `processActivityFiles` just ACKs — without the ACK the band re-offers the file on every connection (perpetual re-download; one of them was 12 KB). New fixtures: `dumpActivityFileFixture` (DEBUG).
 
-Sono `0x08`: cada entrada de estágio é UInt16 BE — bits[15:12]=stage (0=awake,1=light,2=deep,3=rem), bits[11:0]=duração_min.
+Sleep `0x08`: each stage entry is UInt16 BE — bits[15:12]=stage (0=awake,1=light,2=deep,3=rem), bits[11:0]=duration_min.
 
-> **Dois formatos de sono.** O GadgetBridge usa `SleepStagesParser` para `0x03` (ACTIVITY_SLEEP_STAGES, layout por **eventos de transição**, códigos de estágio `2=deep,3=light,4=rem,5=awake`) e `SleepDetailsParser` para `0x08` (layout por **duração**). **Validado em hardware (Mi Band 10, 2026-06-21): o fetch real de sono funciona com o `SleepDetailsParser` — a pulseira emite `0x08`.** O `0x03` antes caía no mesmo parser, que lia os bytes nos offsets errados; agora vai para o `SleepStagesParser` portado (só version 2, como no GadgetBridge; coberto por arquivo sintético, **não** por captura real). Versões de `0x08` fora de 1–5 devolvem vazio em vez de adivinhar o layout. `BandSyncer` loga uma linha por arquivo de sono (`Sleep file … N session(s), N phase(s), N HR, N SpO₂`) — é por ela que se vê, no console, se uma noite chegou e em que formato.
+> **Two sleep formats.** GadgetBridge uses `SleepStagesParser` for `0x03` (ACTIVITY_SLEEP_STAGES, **transition-event** layout, stage codes `2=deep,3=light,4=rem,5=awake`) and `SleepDetailsParser` for `0x08` (**duration** layout). **Validated on hardware (Mi Band 10, 2026-06-21): the real sleep fetch works with `SleepDetailsParser` — the band emits `0x08`.** The `0x03` used to fall into the same parser, which read the bytes at the wrong offsets; it now goes to the ported `SleepStagesParser` (version 2 only, as in GadgetBridge; covered by a synthetic file, **not** by a real capture). `0x08` versions outside 1–5 return empty instead of guessing the layout. `BandSyncer` logs one line per sleep file (`Sleep file … N session(s), N phase(s), N HR, N SpO₂`) — that is how you can see, in the console, whether a night arrived and in what format.
 >
-> **Um arquivo de sono nunca é confirmado sem ser lido nem derruba o resto.** Se a pulseira responde um fetch com outro arquivo ainda sem ACK, esse arquivo é roteado normalmente e só então ACKado (antes era ACKado às cegas, perdendo o conteúdo). A gravação do sono roda isolada em `processActivityFiles`: se ela lança, só os arquivos de sono ficam sem ACK e voltam no próximo sync — manuais, treinos e detalhe diário seguem. O fetch de cada arquivo usa timeout de **inatividade** (10 s sem chunk), não um teto fixo.
+> **A sleep file is never confirmed without being read, nor does it bring down the rest.** If the band answers a fetch with another file still without an ACK, that file is routed normally and only then ACKed (before, it was ACKed blindly, losing the content). Writing the sleep data runs isolated in `processActivityFiles`: if it throws, only the sleep files stay without an ACK and come back on the next sync — manual measurements, workouts and daily detail carry on. Each file's fetch uses an **inactivity** timeout (10 s without a chunk), not a fixed cap.
 
-### Instalação de watch faces e apps (app → band)
+### Watch face and app installation (app → band)
 
-Recurso de personalização (`BLE/Upload/`), portado do GadgetBridge. As mensagens proto já estavam no `xiaomi.pb.swift`. **Não toca em firmware** (`TYPE_FIRMWARE=32`) — risco de brick.
+Customization feature (`BLE/Upload/`), ported from GadgetBridge. The proto messages were already in `xiaomi.pb.swift`. **It does not touch firmware** (`TYPE_FIRMWARE=32`) — brick risk.
 
-| Camada | type | subtypes | Serviço |
+| Layer | type | subtypes | Service |
 |---|---|---|---|
 | Watch faces | 4 | list=0, set=1, delete=2, install=4 | `WatchfaceService` |
 | Apps (RPK / quick apps) | 20 | list=0, install=1, installed=2, delete=3 | `AppInstallService` |
-| Upload em chunks | 22 | uploadStart=0 | `DataUploadService` |
+| Chunked upload | 22 | uploadStart=0 | `DataUploadService` |
 
-**Fluxo de install (faces e apps idêntico, só muda o tag de tipo):**
-1. App anuncia o arquivo: faces `watchfaceInstallStart{id,size}`; apps `rpkInfo{id,versionCode,size}`.
-2. Banda responde com status (faces `watchface.installStatus`; apps `rpk.rpkInstallStart.cmd`). `0` = aceito.
-3. App abre o upload: `CMD_UPLOAD_START{type, md5(arquivo), size}` (type **16**=watchface, **64**=rpk).
-4. Banda responde `dataUploadAck{unknown2, resumePosition, chunkSize (default 2048)}` — suporta retomada.
-5. App monta o envelope e transmite em chunks:
+**Install flow (identical for faces and apps, only the type tag changes):**
+1. The app announces the file: faces `watchfaceInstallStart{id,size}`; apps `rpkInfo{id,versionCode,size}`.
+2. The band replies with a status (faces `watchface.installStatus`; apps `rpk.rpkInstallStart.cmd`). `0` = accepted.
+3. The app opens the upload: `CMD_UPLOAD_START{type, md5(file), size}` (type **16**=watchface, **64**=rpk).
+4. The band replies `dataUploadAck{unknown2, resumePosition, chunkSize (default 2048)}` — supports resuming.
+5. The app builds the envelope and transmits in chunks:
    ```
-   envelope = [0x00][type][md5:16][size:u32 LE][bytes do arquivo a partir de resumePosition]
+   envelope = [0x00][type][md5:16][size:u32 LE][file bytes from resumePosition]
    payload  = envelope + crc32(envelope):u32 LE
-   chunk    = [totalParts:u16 LE][parteAtual:u16 LE][fatia de (chunkSize-4) bytes]
+   chunk    = [totalParts:u16 LE][currentPart:u16 LE][slice of (chunkSize-4) bytes]
    ```
-6. Watch face: ao terminar, app envia `set` (ativa) + `list`. App RPK: a banda envia `installed` (sub=2) e o app pede `list`.
+6. Watch face: when done, the app sends `set` (activate) + `list`. RPK app: the band sends `installed` (sub=2) and the app requests `list`.
 
-> **Chunks de upload vão no canal DATA (2) em texto claro** — `XiaomiSppPacket.buildDataChunk`, opCode PLAINTEXT (GadgetBridge: `CHANNEL_DATA → OPCODE_SEND_PLAINTEXT`). Diferente dos comandos (canal PROTOBUF, AES-CTR): o envelope se protege com md5 + crc32. `BandManager.sendDataChunk` faz **pacing** contra o buffer de `writeWithoutResponse` do CoreBluetooth via `peripheralIsReady(toSendWriteWithoutResponse:)`, senão um upload grande estoura o buffer e perde frames.
+> **Upload chunks go on the DATA channel (2) in plaintext** — `XiaomiSppPacket.buildDataChunk`, opCode PLAINTEXT (GadgetBridge: `CHANNEL_DATA → OPCODE_SEND_PLAINTEXT`). Unlike commands (PROTOBUF channel, AES-CTR): the envelope protects itself with md5 + crc32. `BandManager.sendDataChunk` does **pacing** against CoreBluetooth's `writeWithoutResponse` buffer via `peripheralIsReady(toSendWriteWithoutResponse:)`, otherwise a large upload overflows the buffer and loses frames.
 
-> **Formatos de arquivo** (`InstallableFile`): watch face = binário, magic `0x5A 0xA5`, id numérico NUL-terminated em `0x28`, nome em `0x68`. App = ZIP com `manifest.json` (`package`/`name`/`versionCode`), lido por `MiniZip` (Foundation não descompacta entradas de ZIP no iOS) + inflate via framework `Compression` (`COMPRESSION_ZLIB` = raw deflate).
+> **File formats** (`InstallableFile`): watch face = binary, magic `0x5A 0xA5`, NUL-terminated numeric id at `0x28`, name at `0x68`. App = ZIP with `manifest.json` (`package`/`name`/`versionCode`), read by `MiniZip` (Foundation doesn't decompress ZIP entries on iOS) + inflate via the `Compression` framework (`COMPRESSION_ZLIB` = raw deflate).
 
-> **A validar em hardware:** o canal exato dos chunks (DATA=2) e o pacing; e se a Mi Band 10 aceita faces da comunidade (pode haver trava de região/modelo). Importação via document picker (Files), download por URL e share sheet (`onOpenURL` + `CFBundleDocumentTypes`).
+> **To validate on hardware:** the exact channel of the chunks (DATA=2) and the pacing; and whether the Mi Band 10 accepts community faces (there may be a region/model lock). Import via document picker (Files), download by URL and share sheet (`onOpenURL` + `CFBundleDocumentTypes`).
 
-### Background BLE no iOS
+### Background BLE on iOS
 
-- `bluetooth-central` configurado via `INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central"` no `project.pbxproj` (não em Info.plist separado — ver "Armadilhas Conhecidas")
-- `CBCentralManager` instanciado com `CBCentralManagerOptionRestoreIdentifierKey: "com.myband.central"` para state restoration
-- Implementar `centralManager(_:willRestoreState:)` para reconectar após o app ser suspenso
-- Reconnect automático via `connect(_:options:)` ao receber `didDisconnectPeripheral`, com backoff exponencial (máx. 5 tentativas)
+- `bluetooth-central` configured via `INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central"` in `project.pbxproj` (not in a separate Info.plist — see "Known Pitfalls")
+- `CBCentralManager` instantiated with `CBCentralManagerOptionRestoreIdentifierKey: "com.myband.central"` for state restoration
+- Implement `centralManager(_:willRestoreState:)` to reconnect after the app is suspended
+- Automatic reconnect via `connect(_:options:)` on receiving `didDisconnectPeripheral`, with exponential backoff (max. 5 attempts)
 
-### Orquestração de sincronização
+### Sync orchestration
 
-`BackgroundSyncManager` é o **ponto de entrada único** de todo sync (foreground ou background). Todos os gatilhos passam por `syncNow(disconnectWhenDone:)`, que **coalesce** chamadas concorrentes em um único `Task` em voo — botão do Dashboard, App Intent/Siri, BGTask e o acordar por BLE nunca disparam dois fetches ao mesmo tempo. `disconnectWhenDone`: `nil` = só desconecta se o próprio sync abriu o link (link vivo em foreground permanece); `true`/`false` força (acordares em background passam `true` para liberar o rádio). `syncToHealth()`/`syncWorkoutFiles()` também têm guard de reentrância (`!isSyncing`), serializado pelo `@MainActor` (guard + set antes do primeiro `await`).
+`BackgroundSyncManager` is the **single entry point** of every sync (foreground or background). All triggers go through `syncNow(disconnectWhenDone:)`, which **coalesces** concurrent calls into a single in-flight `Task` — the Dashboard button, App Intent/Siri, BGTask and the BLE wake-up never fire two fetches at the same time. `disconnectWhenDone`: `nil` = only disconnect if the sync itself opened the link (a live foreground link stays); `true`/`false` forces (background wake-ups pass `true` to release the radio). `syncToHealth()`/`syncWorkoutFiles()` also have a re-entrancy guard (`!isSyncing`), serialized by `@MainActor` (guard + set before the first `await`).
 
-Gatilhos de background, em ordem de frequência/confiabilidade:
-1. **Acordar por BLE (state restoration).** Quando a pulseira volta ao alcance, o CoreBluetooth relança o app; ao autenticar, `BandSyncer.onAuthenticated` chama `syncOnBackgroundWakeIfStale()` — só roda se em background, com throttle por `lastHealthSync` (15 min) e desconexão ao fim. É o caminho mais confiável (o evento BLE é que acorda o app).
-2. **`BGAppRefreshTask`** (`com.myband.refresh`) — leve, agendado com frequência pelo SO.
-3. **`BGProcessingTask`** (`com.myband.sync`) — pesado/deferível, costuma rodar carregando.
+Background triggers, in order of frequency/reliability:
+1. **BLE wake-up (state restoration).** When the band comes back into range, CoreBluetooth relaunches the app; on authenticating, `BandSyncer.onAuthenticated` calls `syncOnBackgroundWakeIfStale()` — it only runs if in the background, throttled by `lastHealthSync` (15 min) and disconnecting at the end. This is the most reliable path (the BLE event is what wakes the app).
+2. **`BGAppRefreshTask`** (`com.myband.refresh`) — light, scheduled frequently by the OS.
+3. **`BGProcessingTask`** (`com.myband.sync`) — heavy/deferrable, usually runs while charging.
 
-Ambos os BGTasks são registrados em `register()` (do `AppDelegate.didFinishLaunching` — única janela permitida pelo `BGTaskScheduler.register`) e reagendados em `scheduleNext()` ao ir para segundo plano (`scenePhase`). `Info.plist`: os dois ids em `BGTaskSchedulerPermittedIdentifiers` e os background modes `fetch` (app-refresh) + `processing`. Em launch a frio disparado por uma task, `awaitDependencies()` espera o `configure()` da UI. O `expirationHandler` é instalado **no próprio closure do `register`**, na fila do scheduler, antes do pulo para o main actor — esse pulo já levou 6 s num app recém-retomado, e uma tarefa que expira sem handler é completada como falha pelo iOS (que passa a agendar menos). `finish(_:success:)` garante um único `setTaskCompleted`, venha ele do sync ou da expiração.
+Both BGTasks are registered in `register()` (from `AppDelegate.didFinishLaunching` — the only window allowed by `BGTaskScheduler.register`) and rescheduled in `scheduleNext()` when going to the background (`scenePhase`). `Info.plist`: both ids in `BGTaskSchedulerPermittedIdentifiers` and the `fetch` (app-refresh) + `processing` background modes. On a cold launch triggered by a task, `awaitDependencies()` waits for the UI's `configure()`. The `expirationHandler` is installed **inside the `register` closure itself**, on the scheduler's queue, before the hop to the main actor — that hop once took 6 s in a freshly resumed app, and a task that expires without a handler is completed as a failure by iOS (which then schedules fewer). `finish(_:success:)` guarantees a single `setTaskCompleted`, whether it comes from the sync or from the expiration.
 
-> O fim de treino tem seu próprio caminho (`handleWorkoutFinished`): espera ~8 s o flush do arquivo e busca os file-ids nomeados via `syncWorkoutFiles`, sem passar pelo `syncNow` (mas protegido pelo mesmo guard `!isSyncing`).
+> The end of a workout has its own path (`handleWorkoutFinished`): it waits ~8 s for the file flush and fetches the named file-ids via `syncWorkoutFiles`, without going through `syncNow` (but protected by the same `!isSyncing` guard).
 
 ---
 
-## Extração do AuthKey
+## AuthKey Extraction
 
-O onboarding (`UI/Setup/SetupView.swift`) é uma máquina de passos: `intro → choose → (xiaomi | key) → conexão`. A tela `choose` oferece os dois métodos; ambos terminam produzindo um hex de 32 chars que passa por `AuthKeyStore.saveHex` (validação + Keychain) e segue para `ConnectingView` (mesmo `onConnect` no `RootView`).
+The onboarding (`UI/Setup/SetupView.swift`) is a state machine of steps: `intro → choose → (xiaomi | key) → connection`. The `choose` screen offers both methods; both end up producing a 32-char hex that goes through `AuthKeyStore.saveHex` (validation + Keychain) and proceeds to `ConnectingView` (same `onConnect` in `RootView`).
 
-### Método 1 — Input Manual (`SetupView.keyEntry`)
-- Usuário obtém o AuthKey via ferramentas externas (GadgetBridge export, `token_extractor/`, Xiaomi Cloud) e cola no campo
-- App exibe campo hex de 32 caracteres com validação
-- Salvar no Keychain com `kSecAttrAccessibleAfterFirstUnlock` (acessível em background)
-- É o **fallback** de toda falha do método 2 (link "Inserir AuthKey manualmente" em cada etapa)
+### Method 1 — Manual Input (`SetupView.keyEntry`)
+- The user obtains the AuthKey via external tools (GadgetBridge export, `token_extractor/`, Xiaomi Cloud) and pastes it into the field
+- The app shows a 32-character hex field with validation
+- Save to the Keychain with `kSecAttrAccessibleAfterFirstUnlock` (accessible in the background)
+- It is the **fallback** for every failure of method 2 ("Enter AuthKey manually" link at each step)
 
-### Método 2 — Xiaomi Cloud via usuário/senha (`Auth/XiaomiCloudAuth.swift`, `UI/Setup/XiaomiLoginView.swift`)
-Porta o `PasswordXiaomiCloudConnector` do `token_extractor/token_extractor.py` — login com o usuário e a senha da conta Xiaomi, digitados nesta tela. Substituiu o fluxo anterior por QR (`QrCodeXiaomiCloudConnector`): **troca consciente** — a versão QR nunca expunha a senha ao app (autenticação inteira do lado da Xiaomi), mas dependia de um segundo aparelho ou de um long-poll frágil enquanto o usuário saía e voltava ao app. Login+senha é mais direto e não depende de mais nada, ao custo de a senha passar pela memória do processo do My Band — nunca persistida, nunca logada, só usada para montar o hash MD5 e o corpo cifrado do POST de login. Fluxo (espelha os steps do Python):
+### Method 2 — Xiaomi Cloud via username/password (`Auth/XiaomiCloudAuth.swift`, `UI/Setup/XiaomiLoginView.swift`)
+Ports `PasswordXiaomiCloudConnector` from `token_extractor/token_extractor.py` — login with the Xiaomi account username and password, typed on this screen. It replaced the earlier QR flow (`QrCodeXiaomiCloudConnector`): a **conscious trade-off** — the QR version never exposed the password to the app (authentication entirely on Xiaomi's side), but depended on a second device or a fragile long-poll while the user left and returned to the app. Username+password is more direct and depends on nothing else, at the cost of the password passing through My Band's process memory — never persisted, never logged, only used to build the MD5 hash and the encrypted body of the login POST. Flow (mirrors the Python steps):
 
-1. `GET serviceLogin` → `_sign` (raramente já vem uma sessão pronta com `ssecurity`)
-2. `POST serviceLoginAuth2` com `user` + `hash=MD5(senha)` + `_sign` → `ssecurity`, `userId`, `location`
-   - Se vier `captchaUrl`: mostra a imagem, usuário digita o texto, reenvia o POST com `captCode`
-   - Se vier `notificationUrl`: é 2FA por e-mail — segue a cadeia `identity/list` → `sendEmailTicket` → usuário digita o código recebido → `verifyEmail` → `identity/result/check` → `Auth2/end` (lê `ssecurity` do header não-padrão `extension-pragma`, por isso essas chamadas usam um delegate que **não segue redirect** — só assim dá pra ler os headers da própria resposta de redirecionamento) → redirect para `sts.api.io.mi.com/sts`, que finalmente grava o cookie `serviceToken`
-3. Se o passo 2 não veio com `serviceToken` já (fluxo sem 2FA): `GET location` → cookie `serviceToken` — é a etapa de **confirmação de que o login realmente aconteceu**, antes de seguir para a busca de dispositivos
-4. Para cada região (`cn, de, us, ru, tw, sg, in, i2`), chamadas **cifradas**: `get_homes` + `get_dev_cnt` → casas; `get_devices` → dispositivos; a Mi Band 10 é `miwear.watch.*` com `did` numérico (não contém `blt`) e já carrega o AuthKey no campo `token` — só cai no `blt_get_beaconkey` para dispositivos BLE legados sem `token` inline
-5. Uma pulseira → auto-seleciona; várias → usuário escolhe; a chave entra no mesmo `onConnect`
+1. `GET serviceLogin` → `_sign` (rarely a ready session with `ssecurity` already comes back)
+2. `POST serviceLoginAuth2` with `user` + `hash=MD5(password)` + `_sign` → `ssecurity`, `userId`, `location`
+   - If `captchaUrl` comes back: shows the image, the user types the text, the POST is resent with `captCode`
+   - If `notificationUrl` comes back: it's email 2FA — follows the chain `identity/list` → `sendEmailTicket` → the user types the received code → `verifyEmail` → `identity/result/check` → `Auth2/end` (reads `ssecurity` from the non-standard `extension-pragma` header, which is why these calls use a delegate that **does not follow redirects** — it's the only way to read the headers of the redirect response itself) → redirect to `sts.api.io.mi.com/sts`, which finally sets the `serviceToken` cookie
+3. If step 2 didn't already come with `serviceToken` (no-2FA flow): `GET location` → `serviceToken` cookie — this is the step that **confirms the login really happened**, before moving on to the device search
+4. For each region (`cn, de, us, ru, tw, sg, in, i2`), **encrypted** calls: `get_homes` + `get_dev_cnt` → homes; `get_devices` → devices; the Mi Band 10 is `miwear.watch.*` with a numeric `did` (it doesn't contain `blt`) and already carries the AuthKey in the `token` field — it only falls back to `blt_get_beaconkey` for legacy BLE devices without an inline `token`
+5. One band → auto-selects; several → the user chooses; the key goes into the same `onConnect`
 
-- **Máquina de fases** (`XiaomiCloudAuth.Phase`): `idle → enteringCredentials → authenticating → [awaitingCaptcha | awaiting2FA] → confirmingLogin → fetchingDevices → done`. Captcha e 2FA suspendem a `Task` de login numa `CheckedContinuation` guardada na instância; `submitCaptcha`/`submit2FACode` (chamados pela UI) a resolvem — não há polling, é passo a passo.
-- **Crypto da API** (`Auth/XiaomiCloudCrypto.swift`, separado do `XiaomiCrypto` do BLE): RC4/ARC4 com o **descarte de 1024 bytes de keystream** do pycryptodome, SHA-1, SHA-256 e MD5 (CryptoKit `Insecure.MD5` — só para compatibilidade com o hash de senha legado do endpoint, não é escolha de segurança nossa). `signedNonce = base64(SHA256(b64dec(ssecurity) || b64dec(nonce)))`; cada param é `base64(RC4(key=b64dec(signedNonce)))`; assinatura `base64(SHA1("POST&path&k=v&...&signedNonce"))` — **ordem das chaves preservada** e codificação **`quote_plus`** (réplica do `requests.urlencode`, senão `+`/`/`/`=` quebram a assinatura ou o `_sign`/hash da senha, que também passam pela query string do login). Path = tudo após o primeiro `"com"`, com `/app/` → `/`.
-- **`URLSession` efêmera** com cookie jar próprio em memória — nada do login persiste em disco.
-- Logs de debug (`[XiaomiCloud]`, só DEBUG) imprimem status/cookies/presença de token — **nunca** os valores de usuário, senha, `serviceToken` ou beaconkey/token.
-- **A validar (conta real):** os endpoints da Xiaomi Cloud são frágeis e dependentes de região/conta, e a cadeia de 2FA por e-mail em particular persegue vários redirects e um header não-padrão — portada fielmente da referência, mas sem validação ao vivo ainda (login simples, com captcha, e com 2FA).
-- **Atenção**: o token/beaconkey é o segredo de pareamento — tratado como AuthKey (Keychain, nunca logado/persistido fora dele).
+- **Phase state machine** (`XiaomiCloudAuth.Phase`): `idle → enteringCredentials → authenticating → [awaitingCaptcha | awaiting2FA] → confirmingLogin → fetchingDevices → done`. Captcha and 2FA suspend the login `Task` on a `CheckedContinuation` held on the instance; `submitCaptcha`/`submit2FACode` (called by the UI) resolve it — there is no polling, it is step by step.
+- **API crypto** (`Auth/XiaomiCloudCrypto.swift`, separate from the BLE `XiaomiCrypto`): RC4/ARC4 with pycryptodome's **1024-byte keystream discard**, SHA-1, SHA-256 and MD5 (CryptoKit `Insecure.MD5` — only for compatibility with the endpoint's legacy password hash, not a security choice of ours). `signedNonce = base64(SHA256(b64dec(ssecurity) || b64dec(nonce)))`; each param is `base64(RC4(key=b64dec(signedNonce)))`; signature `base64(SHA1("POST&path&k=v&...&signedNonce"))` — **key order preserved** and **`quote_plus`** encoding (a replica of `requests.urlencode`, otherwise `+`/`/`/`=` break the signature or the `_sign`/password hash, which also travel through the login query string). Path = everything after the first `"com"`, with `/app/` → `/`.
+- **Ephemeral `URLSession`** with its own in-memory cookie jar — nothing from the login persists to disk.
+- Debug logs (`[XiaomiCloud]`, DEBUG only) print status/cookies/token presence — **never** the values of username, password, `serviceToken` or beaconkey/token.
+- **To validate (real account):** the Xiaomi Cloud endpoints are fragile and region/account dependent, and the email 2FA chain in particular chases several redirects and a non-standard header — ported faithfully from the reference, but without live validation yet (simple login, with captcha, and with 2FA).
+- **Attention**: the token/beaconkey is the pairing secret — treated like the AuthKey (Keychain, never logged/persisted outside it).
 
 ---
 
 ## HealthKit
 
-### Tipos de Dados a Escrever
+### Data Types to Write
 
-| Dado Mi Band | Tipo HealthKit |
+| Mi Band data | HealthKit type |
 |---|---|
-| Sono (início/fim/fases) | `HKCategoryTypeIdentifier.sleepAnalysis` |
-| Passos | `HKQuantityTypeIdentifier.stepCount` |
-| Frequência cardíaca | `HKQuantityTypeIdentifier.heartRate` |
+| Sleep (start/end/phases) | `HKCategoryTypeIdentifier.sleepAnalysis` |
+| Steps | `HKQuantityTypeIdentifier.stepCount` |
+| Heart rate | `HKQuantityTypeIdentifier.heartRate` |
 | SpO2 | `HKQuantityTypeIdentifier.oxygenSaturation` |
-| Calorias ativas | `HKQuantityTypeIdentifier.activeEnergyBurned` |
-| Distância caminhada | `HKQuantityTypeIdentifier.distanceWalkingRunning` |
-| FC de repouso | `HKQuantityTypeIdentifier.restingHeartRate` |
-| Temperatura corporal (medição manual) | `HKQuantityTypeIdentifier.bodyTemperature` |
-| VO₂máx (treino) | `HKQuantityTypeIdentifier.vo2Max` |
-| Distância ciclismo / natação (treino) | `HKQuantityTypeIdentifier.distanceCycling` / `.distanceSwimming` |
-| Braçadas (natação) | `HKQuantityTypeIdentifier.swimmingStrokeCount` |
-| Treino | `HKObjectType.workoutType()` via `HKWorkoutBuilder` (mapeado para `HKWorkoutActivityType`) |
-| Rota de treino (GPS) | `HKSeriesType.workoutRoute()` via `HKWorkoutRouteBuilder` |
-| Peso (balança BLE) | `HKQuantityTypeIdentifier.bodyMass` (+ `.bodyMassIndex` derivado de `.height` lida do Health) |
-| Esforço físico (METs/min: kcal ativas da pulseira ÷ peso do Health) | `HKQuantityTypeIdentifier.physicalEffort` |
-| Esforço do treino, escala 1–10 (FC média ÷ FCmáx por idade, Tanaka) | `.estimatedWorkoutEffortScore` (iOS 18+, via `relateWorkoutEffortSample`) |
-| Recuperação cardíaca (pico do fim do treino − FC/min em fim+60 s) | `HKQuantityTypeIdentifier.heartRateRecoveryOneMinute` |
-| Velocidade em treino (pontos GPS V2, m/s) | `.runningSpeed` / `.cyclingSpeed` |
-| Passada média de corrida (distância ÷ passos) | `HKQuantityTypeIdentifier.runningStrideLength` |
-| Distância de remo (iOS 18+; antes caía em distância a pé) | `HKQuantityTypeIdentifier.distanceRowing` |
+| Active calories | `HKQuantityTypeIdentifier.activeEnergyBurned` |
+| Walking distance | `HKQuantityTypeIdentifier.distanceWalkingRunning` |
+| Resting HR | `HKQuantityTypeIdentifier.restingHeartRate` |
+| Body temperature (manual measurement) | `HKQuantityTypeIdentifier.bodyTemperature` |
+| VO₂ max (workout) | `HKQuantityTypeIdentifier.vo2Max` |
+| Cycling / swimming distance (workout) | `HKQuantityTypeIdentifier.distanceCycling` / `.distanceSwimming` |
+| Strokes (swimming) | `HKQuantityTypeIdentifier.swimmingStrokeCount` |
+| Workout | `HKObjectType.workoutType()` via `HKWorkoutBuilder` (mapped to `HKWorkoutActivityType`) |
+| Workout route (GPS) | `HKSeriesType.workoutRoute()` via `HKWorkoutRouteBuilder` |
+| Weight (BLE scale) | `HKQuantityTypeIdentifier.bodyMass` (+ `.bodyMassIndex` derived from `.height` read from Health) |
+| Physical effort (METs/min: the band's active kcal ÷ weight from Health) | `HKQuantityTypeIdentifier.physicalEffort` |
+| Workout effort, 1–10 scale (average HR ÷ age-based max HR, Tanaka) | `.estimatedWorkoutEffortScore` (iOS 18+, via `relateWorkoutEffortSample`) |
+| Heart-rate recovery (peak at the end of the workout − HR/min at end+60 s) | `HKQuantityTypeIdentifier.heartRateRecoveryOneMinute` |
+| Speed during a workout (V2 GPS points, m/s) | `.runningSpeed` / `.cyclingSpeed` |
+| Average running stride (distance ÷ steps) | `HKQuantityTypeIdentifier.runningStrideLength` |
+| Rowing distance (iOS 18+; before that it fell back to walking distance) | `HKQuantityTypeIdentifier.distanceRowing` |
 
-> **`appleStandHour` NÃO é gravável.** `HKCategoryTypeIdentifier.appleStandHour` é reservado (o sistema o deriva do Apple Watch). Incluí-lo em `requestAuthorization(toShare:)` lança `NSInvalidArgumentException`. A máscara de horas em pé da pulseira fica só local — não há tipo "stand hour" gravável por apps de terceiros. O mesmo vale para `appleExerciseTime`, `appleMoveTime`, `appleStandTime` (anéis de atividade) e `walkingHeartRateAverage` — todos read-only para terceiros, sem contorno.
+> **`appleStandHour` is NOT writable.** `HKCategoryTypeIdentifier.appleStandHour` is reserved (the system derives it from the Apple Watch). Including it in `requestAuthorization(toShare:)` throws `NSInvalidArgumentException`. The band's standing-hours mask stays local only — there is no "stand hour" type writable by third-party apps. The same goes for `appleExerciseTime`, `appleMoveTime`, `appleStandTime` (activity rings) and `walkingHeartRateAverage` — all read-only for third parties, no workaround.
 >
-> **Recuperação cardíaca roda no caminho do arquivo diário, não no `writeWorkouts`.** A série 1 Hz do treino termina exatamente no fim do treino (count == duration), então a leitura de fim+60 s só chega no arquivo de detalhe diário seguinte. `writeHeartRateRecoveries` consulta os treinos recentes **do próprio app** no Health (independe de qual sync gravou o treino), casa o pico do último minuto (série 1 Hz, `HKStatisticsQuery` discreteMax) com a leitura por minuto mais próxima de fim+60 s (±30 s) e grava o delta. Best-effort no `BandSyncer` — não bloqueia os ACKs dos arquivos.
+> **Heart-rate recovery runs on the daily-file path, not in `writeWorkouts`.** The workout's 1 Hz series ends exactly at the end of the workout (count == duration), so the end+60 s reading only arrives in the next daily detail file. `writeHeartRateRecoveries` queries the app's **own** recent workouts in Health (regardless of which sync wrote the workout), matches the peak of the last minute (1 Hz series, `HKStatisticsQuery` discreteMax) with the per-minute reading closest to end+60 s (±30 s) and writes the delta. Best-effort in `BandSyncer` — it doesn't block the file ACKs.
 >
-> **Mobilidade continua exclusiva do iPhone.** `walkingSpeed`/`walkingStepLength` são graváveis, mas alimentariam as métricas de Mobilidade que a reconciliação preserva de propósito — por isso a série de velocidade só é escrita para corrida/ciclismo (`speedType(_:)` devolve nil para caminhada/trilha) e a passada usa `runningStrideLength`, não `walkingStepLength`.
+> **Mobility remains exclusive to the iPhone.** `walkingSpeed`/`walkingStepLength` are writable, but they would feed the Mobility metrics that the reconciliation deliberately preserves — that is why the speed series is only written for running/cycling (`speedType(_:)` returns nil for walking/hiking) and the stride uses `runningStrideLength`, not `walkingStepLength`.
 
-### Permissões (Info.plist)
+### Permissions (Info.plist)
 ```
 NSHealthUpdateUsageDescription
 NSHealthShareUsageDescription
 ```
 
-### Deduplicação
-- Antes de escrever, consultar amostras existentes no período para evitar duplicatas
-- Usar `HKQueryAnchor` com persistência em SwiftData para sincronizações incrementais
+### Deduplication
+- Before writing, query existing samples in the period to avoid duplicates
+- Use `HKQueryAnchor` persisted in SwiftData for incremental syncs
 
-> **Reconciliação entre fontes (passos / distância / energia ativa).** O iPhone grava essas mesmas grandezas, e o Apple Health **soma** toda fonte de terceiros por cima do iPhone — a dedup privada iPhone+Watch não se estende a terceiros e **não há API** para mudar a agregação nem registrar a pulseira como fonte confiável. Gravar o total da pulseira cru dobra a contagem (caminhada de 200 → 400). Solução (`HealthKitManager.writeReconciledActivity`): grava-se só o **excedente** da pulseira sobre o iPhone, por minuto — `delta = max(0, banda − iPhone)`, com a soma do iPhone obtida via `HKStatisticsCollectionQuery` em buckets de 1 min e predicado `fonte ≠ este app`. O total por minuto vira `max(banda, iPhone)`: sem double-count, **Mobilidade do iPhone preservada** (Assimetria/Comprimento do Passo/Velocidade/Estabilidade ao Caminhar — a pulseira não produz nada disso e elas exigem o Monitoramento de Fitness **ligado**), e passos sem o telefone ainda capturados. Funciona porque a pulseira reporta minutos **já concluídos**: quando o minuto sincroniza, o pedômetro do iPhone já o finalizou, então o delta é estável e o re-sync (idempotente via sync-id) reproduz o mesmo valor — sem necessidade de `HKObserverQuery` para o dia corrente.
+> **Reconciliation between sources (steps / distance / active energy).** The iPhone records these same quantities, and Apple Health **sums** every third-party source on top of the iPhone — the private iPhone+Watch dedup does not extend to third parties and there is **no API** to change the aggregation or register the band as a trusted source. Writing the band's raw total doubles the count (a 200 walk → 400). Solution (`HealthKitManager.writeReconciledActivity`): write only the band's **surplus** over the iPhone, per minute — `delta = max(0, band − iPhone)`, with the iPhone sum obtained via `HKStatisticsCollectionQuery` in 1-min buckets and predicate `source ≠ this app`. The per-minute total becomes `max(band, iPhone)`: no double-counting, **iPhone Mobility preserved** (Walking Asymmetry/Step Length/Speed/Steadiness — the band produces none of this and they require Fitness Tracking to be **on**), and steps without the phone still captured. It works because the band reports **already-completed** minutes: when the minute syncs, the iPhone's pedometer has already finalized it, so the delta is stable and the re-sync (idempotent via sync-id) reproduces the same value — no need for an `HKObserverQuery` for the current day.
 >
-> **A fonte oficial dessas três grandezas é o arquivo de detalhe diário (por minuto).** `writeDailySummary` deixou de gravar passos/energia (manteria-se somando); ele só escreve extremos band-exclusivos (FC/SpO₂, FC de repouso). Se o usuário **negar a leitura** no HealthKit, os somatórios do iPhone voltam vazios e grava-se o valor cheio da pulseira (direção segura — pulseira como fonte). **SpO₂ fica fora da reconciliação** (o iPhone não tem o sensor) e continua cru por minuto em `writeMinuteSamples`, granularidade intacta.
+> **The official source of these three quantities is the daily detail file (per minute).** `writeDailySummary` no longer writes steps/energy (it would keep adding up); it only writes band-exclusive extremes (HR/SpO₂, resting HR). If the user **denies read access** in HealthKit, the iPhone sums come back empty and the band's full value is written (safe direction — band as the source). **SpO₂ stays out of the reconciliation** (the iPhone has no sensor) and remains raw per minute in `writeMinuteSamples`, granularity intact.
 
 ---
 
-## Balança BLE (OKOK/Chipsea)
+## BLE Scale (OKOK/Chipsea)
 
-`BLE/Scale/` integra uma balança BLE OKOK/Chipsea, **independente da pulseira** (CoreBluetooth próprio). Porta os caminhos de peso da integração [homeassistant-okokscale](https://github.com/rrooggiieerr/homeassistant-okokscale) (Apache-2.0).
+`BLE/Scale/` integrates an OKOK/Chipsea BLE scale, **independent of the band** (its own CoreBluetooth). Ports the weight paths of the [homeassistant-okokscale](https://github.com/rrooggiieerr/homeassistant-okokscale) integration (Apache-2.0).
 
-- **`ScaleWeightParser`** — decodifica o peso do *manufacturer data* do anúncio BLE (`[companyId:2 LE][payload]`). Variante **VC0** (validada em hardware, balança "Yoda1"): casada pelo **byte baixo do company id = `0xC0`** (espelha o `key & 0xFF == 0xC0` da integração); payload de 13 bytes, peso em `bytes[0..1]` BE, `byte[6]` traz a unidade (`(b>>3)&3`: 0=kg, 2=lb, 3=st:lb) e o **bit-final** (`b&1`). Normaliza tudo para kg.
-- **`ScaleManager`** (`@Observable @MainActor NSObject`) — só **escaneia**, nunca conecta. Escreve uma pesagem por vez: qualquer frame zero/não-final **rearma** (`lastFinalWeight = nil`), e um novo frame final não-zero conta como nova pesagem (subir de novo no mesmo peso loga de novo). Grava via `HealthKitManager.writeBodyMass` (`bodyMass` + `bodyMassIndex` quando há `height` no Health), sync-id por timestamp (idempotente).
+- **`ScaleWeightParser`** — decodes the weight from the BLE advertisement's *manufacturer data* (`[companyId:2 LE][payload]`). **VC0** variant (validated on hardware, "Yoda1" scale): matched by the **low byte of the company id = `0xC0`** (mirrors the integration's `key & 0xFF == 0xC0`); 13-byte payload, weight in `bytes[0..1]` BE, `byte[6]` carries the unit (`(b>>3)&3`: 0=kg, 2=lb, 3=st:lb) and the **final bit** (`b&1`). Normalizes everything to kg.
+- **`ScaleManager`** (`@Observable @MainActor NSObject`) — only **scans**, never connects. Writes one weigh-in at a time: any zero/non-final frame **re-arms** (`lastFinalWeight = nil`), and a new non-zero final frame counts as a new weigh-in (stepping on again at the same weight logs again). Writes via `HealthKitManager.writeBodyMass` (`bodyMass` + `bodyMassIndex` when there is a `height` in Health), sync-id by timestamp (idempotent).
 
-> **A balança é broadcast-only.** Confirmado em hardware: **não aceita conexão GATT** (todo `connect` dá timeout, mesmo durante a medição) e **não anuncia service UUID**. Consequências: (1) escuta **foreground-only** — scan sem filtro de serviço não funciona em background no iOS (a pulseira, com state restoration por UUID, continua em background normalmente); (2) **só o peso é recuperável**. A impedância **não chega ao telefone** — o anúncio carrega só o peso (bytes 2-3 são um `0x1388` constante, não impedância) e não há GATT. Os números de composição corporal do app OKOK (gordura %, massa magra, água…) são **estimativa a partir de peso + perfil**, não bioimpedância real: validado observando que todas as métricas se movem **monotonicamente com o peso** entre duas pesagens. Por isso o My Band grava só `bodyMass`/`bodyMassIndex` (dado medido), não composição corporal estimada.
+> **The scale is broadcast-only.** Confirmed on hardware: it **does not accept a GATT connection** (every `connect` times out, even during the measurement) and **does not advertise a service UUID**. Consequences: (1) listening is **foreground-only** — a scan without a service filter doesn't work in the background on iOS (the band, with UUID-based state restoration, keeps working in the background normally); (2) **only the weight is recoverable**. The impedance **does not reach the phone** — the advertisement carries only the weight (bytes 2-3 are a constant `0x1388`, not impedance) and there is no GATT. The body-composition numbers in the OKOK app (fat %, lean mass, water…) are an **estimate from weight + profile**, not real bioimpedance: validated by observing that all metrics move **monotonically with weight** between two weigh-ins. That is why My Band writes only `bodyMass`/`bodyMassIndex` (measured data), not estimated body composition.
 
 ---
 
-## App Intents e Atalhos
+## App Intents and Shortcuts
 
-> **Home Assistant foi cortado do roadmap** (decisão registrada só aqui, nunca chegou a ter código — ver conversa/histórico). A integração REST direta que este documento chegou a especificar não será construída. No lugar dos gatilhos que ela ofereceria (sono detectado, HR acima de limiar), o app expõe **estado via App Intent** e deixa a automação inteiramente a cargo das Automações Pessoais do próprio Atalhos do usuário — sem o app precisar saber nada sobre luzes, cenas ou scripts de terceiros.
+> **Home Assistant was cut from the roadmap** (decision recorded only here, it never had code — see conversation/history). The direct REST integration this document once specified will not be built. In place of the triggers it would have offered (sleep detected, HR above threshold), the app exposes **state via App Intent** and leaves the automation entirely to the user's own Shortcuts Personal Automations — without the app needing to know anything about lights, scenes or third-party scripts.
 
-### Intents Disponíveis
+### Available Intents
 
-| Intent | Parâmetros | Retorno |
+| Intent | Parameters | Return |
 |---|---|---|
-| `SyncBandIntent` | — | Status da sincronização |
-| `GetSleepStateIntent` | — | `Bool` (dormindo?) + diálogo com a idade do dado |
-| `CheckBandBatteryIntent` | `threshold: Int` (1–100, padrão 30) | `Int?` (nível) + notificação local **só** se abaixo do limite |
-| `RunBandMiniAppIntent` | `appId: String` | (Fase futura) |
+| `SyncBandIntent` | — | Sync status |
+| `GetSleepStateIntent` | — | `Bool` (asleep?) + dialog with the age of the data |
+| `CheckBandBatteryIntent` | `threshold: Int` (1–100, default 30) | `Int?` (level) + local notification **only** if below the threshold |
+| `RunBandMiniAppIntent` | `appId: String` | (Future phase) |
 
-> **`GetSleepStateIntent` é pull, não push.** A pulseira não tem evento de "dormi"/"acordei" (ver "Comandos iniciados pela pulseira" acima) — sono só é conhecido depois que o app sincroniza. O intent força uma sincronização (`BackgroundSyncManager.shared.syncNow()`, best-effort — falha não é fatal) antes de responder, e considera o dado "dormindo" só se a última sessão sincronizada terminar há menos de 1h e sua última fase não for `.awake`. O diálogo sempre declara a idade do dado ("dormindo, dado de X min atrás"), pra uma Automação Pessoal encadeada nunca agir silenciosamente sobre um estado velho.
+> **`GetSleepStateIntent` is pull, not push.** The band has no "fell asleep"/"woke up" event (see "Band-initiated commands" above) — sleep is only known after the app syncs. The intent forces a sync (`BackgroundSyncManager.shared.syncNow()`, best-effort — failure isn't fatal) before answering, and considers the data "asleep" only if the last synced session ended less than 1h ago and its last phase is not `.awake`. The dialog always states the age of the data ("asleep, data from X min ago"), so a chained Personal Automation never silently acts on a stale state.
 
-> **`CheckBandBatteryIntent` é silencioso por padrão.** Pensado para uma Automação Pessoal "ao conectar o carregador do iPhone": lembrar de pôr a pulseira para carregar junto. Um atalho que falasse a cada execução viraria ruído, então ele **não tem diálogo** — roda o sync completo **segurando o link** (`syncNow(disconnectWhenDone: false)`; com o padrão, o sync desconectava o link que ele mesmo abriu e o pedido abaixo virava código morto), pede uma leitura fresca enquanto o link está aberto (`BandManager.refreshBattery` — o nível em memória pode estar velho numa conexão longa), espera as respostas (teto de 3 s, não um sleep) e só age se `nível < threshold` **e** a pulseira não estiver já no carregador, postando uma notificação local. O nível também sai como valor de retorno, para quem quiser encadear a própria condição. Pulseira fora de alcance → responde com o último nível conhecido em vez de falhar o atalho (e a automação inteira); sem nenhuma leitura → `nil`, sem notificar. O rádio é liberado no fim do intent, e só se não havia link vivo antes dele.
+> **`CheckBandBatteryIntent` is silent by default.** Designed for a Personal Automation "when the iPhone's charger is connected": remember to put the band on the charger too. A shortcut that spoke on every run would become noise, so it has **no dialog** — it runs the full sync **holding the link** (`syncNow(disconnectWhenDone: false)`; with the default, the sync disconnected the link it had opened itself and the request below became dead code), requests a fresh reading while the link is open (`BandManager.refreshBattery` — the in-memory level may be stale on a long connection), waits for the responses (3 s cap, not a sleep) and only acts if `level < threshold` **and** the band isn't already on the charger, posting a local notification. The level also comes out as a return value, for anyone who wants to chain their own condition. Band out of range → answers with the last known level instead of failing the shortcut (and the whole automation); no reading at all → `nil`, without notifying. The radio is released at the end of the intent, and only if there was no live link before it.
 >
-> **O nível é o mesmo do widget Baterias do iOS.** Não há API para ler o widget (ele usa o framework privado `BatteryCenter`), mas dá para ler a **mesma fonte**: o Battery Service GATT padrão (`0x180F` / `0x2A19`), que o iOS consulta nos acessórios BLE pareados. `BandManager` o descobre junto com o `FE95` e, quando existe, a `2A19` é dona de `batteryLevel`; o `CMD_BATTERY` do protobuf continua sendo pedido porque só ele traz o estado de carregamento (`battery.state == 1`). Sem o `180F`, o nível volta a vir do protobuf. **Leitura e assinatura da `2A19` só depois da auth**: se a característica exigir criptografia, tocá-la num link ainda sem bond faria o iOS levantar a folha de pareamento *antes* do diálogo da pulseira, invertendo a ordem dos dois prompts em que o ADR 0003 se apoia. Consequência aceita: sem auth não há leitura GATT, mesmo que a pulseira a exponha.
+> **The level is the same as iOS's Batteries widget.** There is no API to read the widget (it uses the private `BatteryCenter` framework), but the **same source** can be read: the standard GATT Battery Service (`0x180F` / `0x2A19`), which iOS queries on paired BLE accessories. `BandManager` discovers it together with `FE95` and, when it exists, `2A19` owns `batteryLevel`; the protobuf `CMD_BATTERY` is still requested because only it carries the charging state (`battery.state == 1`). Without `180F`, the level goes back to coming from the protobuf. **Reading and subscribing to `2A19` only after auth**: if the characteristic requires encryption, touching it on a link with no bond yet would make iOS raise the pairing sheet *before* the band's dialog, inverting the order of the two prompts that ADR 0003 relies on. Accepted consequence: without auth there is no GATT reading, even if the band exposes it.
 
-### Frases Siri (AppShortcutsProvider)
-- "Sincronizar minha pulseira"
-- "Estou dormindo no My Band"
-- "Ver se estou dormindo no My Band"
-- "Verificar bateria da pulseira no My Band"
+### Siri Phrases (AppShortcutsProvider)
+- "Sync my band in My Band"
+- "I am sleeping in My Band"
+- "Check if I am asleep in My Band"
+- "Check band battery in My Band"
 
 ---
 
 ## UI / Design System
 
-A UI é construída a partir do handoff do **Claude Design** (`My Band — Design System`, bundle exportado de claude.ai/design). Recriar fielmente em SwiftUI — copiar o **resultado visual**, não a estrutura HTML/JSX dos protótipos.
+The UI is built from the **Claude Design** handoff (`My Band — Design System`, a bundle exported from claude.ai/design). Faithfully recreate in SwiftUI — copy the **visual result**, not the HTML/JSX structure of the prototypes.
 
-> **Sem visualização de dados de saúde em tela própria** (ver ADR 0001). O app não mostra sono, FC, passos ou SpO₂ em nenhuma tela — isso é papel do Apple Health e do Atalho `GetSleepStateIntent`. A Dashboard só mostra estado de conexão, frescor do sync, bateria e o botão de sincronizar; não existe (nem está planejada) uma tela `SleepDetail`/hipnograma.
+> **No health-data visualization on its own screen** (see ADR 0001). The app shows sleep, HR, steps or SpO₂ on no screen — that is the role of Apple Health and the `GetSleepStateIntent` Shortcut. The Dashboard only shows connection state, sync freshness, battery and the sync button; there is no `SleepDetail`/hypnogram screen (nor is one planned).
 
-**Princípios fixos do maker:**
-1. **Dark-mode first** — "gosto de modo noturno".
-2. **Simples, direto, glanceável** — o app é um *gateway* em segundo plano; a UI serve para status rápido e configuração, não para tempo de tela — levado ao extremo: nem os próprios dados de saúde aparecem em tela.
-3. **Native Apple** — SwiftUI, iOS 26+, Liquid Glass no chrome/status (ver ADR 0001), fiel à HIG.
+**The maker's fixed principles:**
+1. **Dark-mode first** — "I like night mode".
+2. **Simple, direct, glanceable** — the app is a background *gateway*; the UI serves quick status and configuration, not screen time — taken to the extreme: not even the health data itself appears on screen.
+3. **Native Apple** — SwiftUI, iOS 26+, Liquid Glass on chrome/status (see ADR 0001), faithful to the HIG.
 
-**Fundações visuais:**
-- **Paleta midnight** (OLED): base `#0A0B10`, cards `#14161F`, superfícies elevadas `#1A1D27`. Elevação por *lightness + hairline* `rgba(255,255,255,.07)`, não sombra.
-- **Accent único**: Aurora indigo `#7C7FFF` (interação, seleção, foco, glow de conexão ativa).
-- **Cores de saúde** espelham o Apple Health: HR `#FF5C7A`, passos `#46E0A0`, SpO₂ `#5BC0F8`, energia `#FF9A4C`.
-- **Rampa de fases de sono** dusk→deep-night: acordado `#F6A052` → REM `#5BC0F8` → leve `#8A8CFF` → profundo `#4B45C7`.
-- **Status**: ok/conectada mint `#46E0A0`, conectando/aviso âmbar `#F6C552`, desconectada/erro rosa `#FF5C6C`.
-- **Tipo**: escala iOS, SF Pro on-device (Geist no kit web). Numerais de dados grandes (48–64px), tabular. AuthKey e valores técnicos em **mono**.
-- **Cantos** contínuos: cards 16, sheets 20, hero/modal 28, pills redondos. **4-pt grid**, gutter 20, hit target ≥44.
-- **Ícones**: SF Symbols (kit web usa Lucide como substituto). Status sempre cor + símbolo, nunca cor sozinha.
+**Visual foundations:**
+- **Midnight palette** (OLED): base `#0A0B10`, cards `#14161F`, elevated surfaces `#1A1D27`. Elevation by *lightness + hairline* `rgba(255,255,255,.07)`, not shadow.
+- **Single accent**: Aurora indigo `#7C7FFF` (interaction, selection, focus, glow of an active connection).
+- **Health colors** mirror Apple Health: HR `#FF5C7A`, steps `#46E0A0`, SpO₂ `#5BC0F8`, energy `#FF9A4C`.
+- **Sleep-phase ramp** dusk→deep-night: awake `#F6A052` → REM `#5BC0F8` → light `#8A8CFF` → deep `#4B45C7`.
+- **Status**: ok/connected mint `#46E0A0`, connecting/warning amber `#F6C552`, disconnected/error pink `#FF5C6C`.
+- **Type**: iOS scale, SF Pro on-device (Geist in the web kit). Large data numerals (48–64px), tabular. AuthKey and technical values in **mono**.
+- **Continuous corners**: cards 16, sheets 20, hero/modal 28, round pills. **4-pt grid**, gutter 20, hit target ≥44.
+- **Icons**: SF Symbols (the web kit uses Lucide as a substitute). Status always color + symbol, never color alone.
 
-**Voz & copy (pt-BR):** sentence case, sem emoji, tratamento por **você**, dispositivo = "a pulseira". Tom calmo e factual ("Sincronizado há 2 min", "42 amostras no Apple Health"). Sem dado de saúde em tela — o número que aparece é sempre de status/sync, nunca uma métrica de saúde. Honestidade técnica: AuthKey/BLE mostrados em mono, AuthKey mascarado por padrão.
+**Voice & copy (English):** sentence case, no emoji, addressing the user as "you", device = "the band". Calm, factual tone ("Synced 2 min ago", "42 samples in Apple Health"). No health data on screen — the number that appears is always status/sync, never a health metric. Technical honesty: AuthKey/BLE shown in mono, AuthKey masked by default.
 
-**Telas (`ui_kits/app/`):** `Dashboard` (status de conexão, frescor do sync, bateria, sincronizar — sem dados de saúde, ver ADR 0001), `Setup` (AuthKey + scan/conexão), `Settings`. **Não existe `SleepDetail`.** Status de conexão + frescor do sync são first-class em toda tela.
+**Screens (`ui_kits/app/`):** `Dashboard` (connection status, sync freshness, battery, sync — no health data, see ADR 0001), `Setup` (AuthKey + scan/connection), `Settings`. **There is no `SleepDetail`.** Connection status + sync freshness are first-class on every screen.
 
-**Componentes do kit** (`components/`): core (`Button`, `IconButton`, `StatusPill`, `Badge`), forms (`Switch`, `TextField`, `SegmentedControl`), data (`ListRow`, `Card`, `MetricTile`, `SectionHeader`, `SleepBar`). Cada um tem `.prompt.md` e `.d.ts` descrevendo props/variantes.
+**Kit components** (`components/`): core (`Button`, `IconButton`, `StatusPill`, `Badge`), forms (`Switch`, `TextField`, `SegmentedControl`), data (`ListRow`, `Card`, `MetricTile`, `SectionHeader`, `SleepBar`). Each has a `.prompt.md` and a `.d.ts` describing props/variants.
 
 ---
 
-## SwiftData — Modelos Principais
+## SwiftData — Main Models
 
 ```swift
 @Model class BandDevice {
     var id: UUID
     var name: String
-    var peripheralIdentifier: String  // UUID do CBPeripheral
+    var peripheralIdentifier: String  // CBPeripheral UUID
     var lastSyncDate: Date?
-    // AuthKey armazenado NO KEYCHAIN, não aqui
+    // AuthKey stored IN THE KEYCHAIN, not here
 }
 
 @Model class SleepSession {
@@ -440,7 +440,7 @@ A UI é construída a partir do handoff do **Claude Design** (`My Band — Desig
 }
 
 @Model class ActivityDay {
-    var date: DateComponents           // apenas ano/mês/dia
+    var date: DateComponents           // year/month/day only
     var steps: Int
     var calories: Double
     var distanceMeters: Double
@@ -452,106 +452,106 @@ A UI é construída a partir do handoff do **Claude Design** (`My Band — Desig
 
 ## Changelog
 
-O projeto segue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) e [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**Toda mudança notável deve ser registrada em `CHANGELOG.md` antes do commit**, nas categorias:
+**Every notable change must be recorded in `CHANGELOG.md` before the commit**, in the categories:
 
-| Categoria | Quando usar |
+| Category | When to use |
 |---|---|
-| `Added` | Nova funcionalidade |
-| `Changed` | Mudança em funcionalidade existente |
-| `Deprecated` | Funcionalidade a ser removida em versão futura |
-| `Removed` | Funcionalidade removida |
-| `Fixed` | Correção de bug |
-| `Security` | Correção de vulnerabilidade |
+| `Added` | New feature |
+| `Changed` | Change to existing functionality |
+| `Deprecated` | Functionality to be removed in a future version |
+| `Removed` | Removed functionality |
+| `Fixed` | Bug fix |
+| `Security` | Vulnerability fix |
 
-Entradas pendentes de release ficam sob `## [Unreleased]`. Ao lançar uma versão, mover para `## [X.Y.Z] - YYYY-MM-DD`.
+Entries pending release go under `## [Unreleased]`. When releasing a version, move them to `## [X.Y.Z] - YYYY-MM-DD`.
 
-Versão atual: **1.2.0** — ver `CHANGELOG.md` para o histórico completo. Próxima fase, tudo **a validar em hardware**:
+Current version: **1.2.0** — see `CHANGELOG.md` for the full history. Next phase, everything **to be validated on hardware**:
 
-1. O pareamento paciente num pareamento **novo** de verdade (ADR 0003 + adendo) — a janela de 180 s atravessando a queda de link do bonding, o avanço de `PairingStage` para `.phone`, se a folha do iOS realmente produz um `CBATTError.insufficientAuthentication` observável (ou sobe sem rejeitar write nenhum), e o restart de sessão que a pulseira faz depois do aceite. Os logs de 2026-09-05 vieram de uma pulseira já pareada e de tentativas que falhavam, não de um aceite bem-sucedido.
-2. O sync completo depois do fix de restart de sessão — se a pulseira reabre a sessão e o app rederiva as chaves, o `FETCH_TODAY` deve finalmente receber resposta em vez de só ACKs. No console, um sync numa conexão nova deve mostrar `FETCH_TODAY cut short by a band session restart — re-sending after re-auth` seguido de `FETCH_TODAY → N file ID(s)`, e cada noite uma linha `Sleep file …`.
-3. O login Xiaomi Cloud por usuário/senha com captcha e 2FA (ADR 0002; login simples já confirmado).
-4. O `GetSleepStateIntent`.
-5. O `CheckBandBatteryIntent` — em especial o `CMD_BATTERY` sob demanda fora do init pós-auth (a resposta chega no mesmo `handleSystemCommand`, mas nunca foi exercitada com o link já aberto há tempo). E se a Mi Band 10 expõe o Battery Service `0x180F` a apps (a linha `Services:` do log da conexão responde), se a `2A19` lê sem erro pós-auth e se o número bate com o widget Baterias — o log imprime os dois (`via GATT 2A19` / `via protobuf — keeping GATT`).
+1. Patient pairing on a genuinely **new** pairing (ADR 0003 + addendum) — the 180 s window spanning the bonding link drop, `PairingStage` advancing to `.phone`, whether the iOS sheet really produces an observable `CBATTError.insufficientAuthentication` (or comes up without rejecting any write), and the session restart the band does after the accept. The 2026-09-05 logs came from an already-paired band and from attempts that failed, not from a successful accept.
+2. The full sync after the session-restart fix — if the band reopens the session and the app re-derives the keys, `FETCH_TODAY` should finally get a response instead of only ACKs. In the console, a sync on a new connection should show `FETCH_TODAY cut short by a band session restart — re-sending after re-auth` followed by `FETCH_TODAY → N file ID(s)`, and for each night a `Sleep file …` line.
+3. The Xiaomi Cloud username/password login with captcha and 2FA (ADR 0002; simple login already confirmed).
+4. The `GetSleepStateIntent`.
+5. The `CheckBandBatteryIntent` — in particular the on-demand `CMD_BATTERY` outside the post-auth init (the response arrives in the same `handleSystemCommand`, but it has never been exercised with a link that has already been open for a while). And whether the Mi Band 10 exposes the `0x180F` Battery Service to apps (the `Services:` line of the connection log answers), whether `2A19` reads without error post-auth and whether the number matches the Batteries widget — the log prints both (`via GATT 2A19` / `via protobuf — keeping GATT`).
 
-Home Assistant foi cortado do roadmap; UI segue sem visualização de dados de saúde por decisão (ver ADR 0001).
-
----
-
-## Convenções de Código
-
-- **Nenhum comentário óbvio** — nomear bem, não comentar o que é evidente
-- **Comentar apenas WHY não-óbvios**: invariantes de protocolo BLE, workarounds de hardware
-- **@Observable** em vez de ObservableObject (Swift 5.9+)
-- **async/await** para todas as operações BLE e de rede — sem callbacks aninhados
-- **`BandManager` é `@Observable @MainActor NSObject`** — não um Swift `actor` puro. CBCentralManagerDelegate exige NSObject; configurar `CBCentralManager` com `queue: .main` faz os callbacks chegarem na main thread, alinhado com `@MainActor` sem bridging extra
-- **Nenhum force-unwrap** — tratar erros explicitamente
-- Mínimo iOS 17 / macOS 14 — usar APIs modernas sem shims de compatibilidade
+Home Assistant was cut from the roadmap; the UI remains without health-data visualization by decision (see ADR 0001).
 
 ---
 
-## Armadilhas Conhecidas
+## Code Conventions
+
+- **No obvious comments** — name things well, don't comment what is evident
+- **Comment only non-obvious WHYs**: BLE protocol invariants, hardware workarounds
+- **@Observable** instead of ObservableObject (Swift 5.9+)
+- **async/await** for all BLE and network operations — no nested callbacks
+- **`BandManager` is `@Observable @MainActor NSObject`** — not a pure Swift `actor`. CBCentralManagerDelegate requires NSObject; configuring `CBCentralManager` with `queue: .main` makes the callbacks arrive on the main thread, aligned with `@MainActor` without extra bridging
+- **No force-unwrap** — handle errors explicitly
+- Minimum iOS 17 / macOS 14 — use modern APIs without compatibility shims
+
+---
+
+## Known Pitfalls
 
 ### Xcode 16 — PBXFileSystemSynchronizedRootGroup
-O projeto usa sincronização automática de pasta (`PBXFileSystemSynchronizedRootGroup`): **qualquer arquivo criado dentro de `My Band/My Band/` é incluído automaticamente no build**.
-- **Não criar `Info.plist` dentro de `My Band/My Band/`** — causará "Multiple commands produce Info.plist".
-- O Info.plist do projeto fica em **`$(SRCROOT)/Info.plist`** (raiz do projeto, fora da pasta sincronizada). `GENERATE_INFOPLIST_FILE = NO` e `INFOPLIST_FILE = "Info.plist"` no pbxproj.
-- Ao criar subpastas (`BLE/`, `Auth/`, etc.), usar `XcodeMakeDir` do MCP do Xcode para que sejam registradas corretamente no projeto.
+The project uses automatic folder synchronization (`PBXFileSystemSynchronizedRootGroup`): **any file created inside `My Band/My Band/` is automatically included in the build**.
+- **Do not create an `Info.plist` inside `My Band/My Band/`** — it will cause "Multiple commands produce Info.plist".
+- The project's Info.plist lives at **`$(SRCROOT)/Info.plist`** (project root, outside the synchronized folder). `GENERATE_INFOPLIST_FILE = NO` and `INFOPLIST_FILE = "Info.plist"` in the pbxproj.
+- When creating subfolders (`BLE/`, `Auth/`, etc.), use `XcodeMakeDir` from the Xcode MCP so they are registered correctly in the project.
 
-### INFOPLIST_KEY_UIBackgroundModes gera `<string>`, não `<array>`
-`INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central"` com `GENERATE_INFOPLIST_FILE = YES` gera o tipo errado no plist — `<string>` em vez de `<array>`. `CBCentralManager` valida o tipo em runtime e lança `NSInternalInconsistencyException: State restoration of CBCentralManager is only allowed for applications that have specified the "bluetooth-central" background mode`. **Sempre usar o Info.plist manual** com `<array><string>bluetooth-central</string></array>`.
+### INFOPLIST_KEY_UIBackgroundModes generates `<string>`, not `<array>`
+`INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central"` with `GENERATE_INFOPLIST_FILE = YES` generates the wrong type in the plist — `<string>` instead of `<array>`. `CBCentralManager` validates the type at runtime and throws `NSInternalInconsistencyException: State restoration of CBCentralManager is only allowed for applications that have specified the "bluetooth-central" background mode`. **Always use the manual Info.plist** with `<array><string>bluetooth-central</string></array>`.
 
-### CBCentralManagerOptionRestoreIdentifierKey no Simulator
-O iOS Simulator não suporta state restoration do CoreBluetooth. Envolver em `#if !targetEnvironment(simulator)` para evitar crash no simulator.
+### CBCentralManagerOptionRestoreIdentifierKey on the Simulator
+The iOS Simulator does not support CoreBluetooth state restoration. Wrap it in `#if !targetEnvironment(simulator)` to avoid a crash on the simulator.
 
-### CommonCrypto — Exclusividade de acesso Swift
-Ao usar `Data.withUnsafeMutableBytes`, capturar `data.count` em uma variável local **antes** do closure para evitar o erro de exclusividade:
+### CommonCrypto — Swift exclusive access
+When using `Data.withUnsafeMutableBytes`, capture `data.count` in a local variable **before** the closure to avoid the exclusivity error:
 ```swift
-let capacity = output.count          // capturar ANTES
+let capacity = output.count          // capture BEFORE
 output.withUnsafeMutableBytes { buf in
-    CCCrypt(..., buf.baseAddress, capacity, ...)  // usar variável
+    CCCrypt(..., buf.baseAddress, capacity, ...)  // use the variable
 }
 ```
 
-### BandManager.startScan() — Race condition com CBCentralManager
-`CBCentralManager` é inicializado de forma assíncrona. Se `startScan()` for chamado (ex: de `.onAppear`) antes de `centralManagerDidUpdateState(.poweredOn)` disparar, o guard `central.state == .poweredOn` falha silenciosamente e o scan nunca inicia.
-Solução implementada: flag `pendingScan` em `BandManager`. Se BT não estiver pronto, `pendingScan = true`; `centralManagerDidUpdateState` consome o flag e chama `startScan()` quando o BT ficar `poweredOn`.
+### BandManager.startScan() — Race condition with CBCentralManager
+`CBCentralManager` is initialized asynchronously. If `startScan()` is called (e.g. from `.onAppear`) before `centralManagerDidUpdateState(.poweredOn)` fires, the `central.state == .poweredOn` guard fails silently and the scan never starts.
+Implemented solution: a `pendingScan` flag in `BandManager`. If BT isn't ready, `pendingScan = true`; `centralManagerDidUpdateState` consumes the flag and calls `startScan()` when BT becomes `poweredOn`.
 
-### ModelContainer — fatalError após watchdog kill
-Watchdog kills (app em background excedendo tempo de handlers) podem corromper o arquivo SQLite do SwiftData. No próximo launch, `ModelContainer(for:configurations:)` falha e a versão original chamava `fatalError` imediatamente, aparecendo como "Message from debugger: killed" sem nenhum log útil.
-Solução implementada: se `ModelContainer` falhar, deletar os arquivos `.store`, `.store-shm` e `.store-wal` e tentar novamente antes de chamar `fatalError`. Perda de dados locais aceitável em desenvolvimento; em produção trocar por migração.
+### ModelContainer — fatalError after a watchdog kill
+Watchdog kills (app in the background exceeding handler time) can corrupt the SwiftData SQLite file. On the next launch, `ModelContainer(for:configurations:)` fails and the original version called `fatalError` immediately, showing up as "Message from debugger: killed" with no useful log.
+Implemented solution: if `ModelContainer` fails, delete the `.store`, `.store-shm` and `.store-wal` files and try again before calling `fatalError`. Loss of local data is acceptable in development; in production replace it with a migration.
 
-### dyld AVPlayerView — Erro de debug no Mac
-Ao rodar o app no Mac (iOS app via camada `/System/iOSSupport/`), o debugger do Xcode carrega `libViewDebuggerSupport.dylib` da plataforma MacOSX, que tenta resolver `_OBJC_CLASS_$_AVPlayerView` no AVKit iOS onde a classe não existe. Resulta em "Message from debugger: killed" sem log do app.
-**Não é um bug do app.** Solução: rodar no iPhone físico. Para BLE, o iPhone físico é obrigatório de qualquer forma — o Simulator e o Mac não se conectam com a Mi Band.
+### dyld AVPlayerView — Debug error on the Mac
+When running the app on the Mac (iOS app via the `/System/iOSSupport/` layer), Xcode's debugger loads `libViewDebuggerSupport.dylib` from the MacOSX platform, which tries to resolve `_OBJC_CLASS_$_AVPlayerView` in the iOS AVKit where the class doesn't exist. It results in "Message from debugger: killed" with no app log.
+**It is not an app bug.** Solution: run on the physical iPhone. For BLE, the physical iPhone is mandatory anyway — the Simulator and the Mac don't connect to the Mi Band.
 
-### HealthKit — Tipos Reservados dos Anéis do Apple Watch
-O HealthKit **proíbe expressamente** que apps de terceiros solicitem permissão de compartilhamento (`toShare`) para identificadores proprietários dos anéis de atividade do Apple Watch:
+### HealthKit — Reserved Apple Watch Ring Types
+HealthKit **expressly forbids** third-party apps from requesting share permission (`toShare`) for the proprietary Apple Watch activity-ring identifiers:
 - `HKCategoryTypeIdentifierAppleStandHour`
 - `HKQuantityTypeIdentifierAppleExerciseTime`
 - `HKQuantityTypeIdentifierAppleMoveTime`
 
-Passar qualquer um desses tipos em `requestAuthorization(toShare:read:)` lança imediatamente `NSInvalidArgumentException: Authorization to share the following types is disallowed: ...`. O tempo de exercício deve ser contabilizado pelo sistema a partir dos `HKWorkout` gravados, nunca escrito diretamente.
+Passing any of these types to `requestAuthorization(toShare:read:)` immediately throws `NSInvalidArgumentException: Authorization to share the following types is disallowed: ...`. Exercise time must be accounted for by the system from the recorded `HKWorkout`s, never written directly.
 
-### Sanitização de Pacotes Cumulativos de Sono da Mi Band
-A Mi Band 10 envia os estágios de sono (pacotes do tipo 17) de forma cumulativa. Se múltiplos pacotes forem processados sem deduplicação/mesclagem temporal (`sanitizeStages`), os minutos de sono são somados repetidamente no HealthKit, inflando as sessões. Além disso, timestamps brutos da Xiaomi em `firstRecordTime` exigem decodificação sem sinal (`u32`) e validação de época para evitar anos 1928 e 1970.
+### Sanitizing Cumulative Mi Band Sleep Packets
+The Mi Band 10 sends sleep stages (type 17 packets) cumulatively. If multiple packets are processed without temporal deduplication/merging (`sanitizeStages`), the sleep minutes are added repeatedly in HealthKit, inflating the sessions. In addition, raw Xiaomi timestamps in `firstRecordTime` require unsigned decoding (`u32`) and epoch validation to avoid the years 1928 and 1970.
 
 ---
 
-## Build e Testes
+## Build and Tests
 
 ```bash
-# Compilar (requer Xcode 16+)
+# Build (requires Xcode 16+)
 xcodebuild -scheme "My Band" -destination "platform=iOS Simulator,name=iPhone 15 Pro"
 
-# Testes unitários (parsers de protocolo, conversão HealthKit)
+# Unit tests (protocol parsers, HealthKit conversion)
 xcodebuild test -scheme "My Band" -destination "platform=iOS Simulator,name=iPhone 15 Pro"
 ```
 
-- Testar lógica de protocolo BLE com dados capturados reais (fixtures em `Tests/Fixtures/`)
-- Não mockar `CBCentralManager` em testes de unidade — testar apenas camadas de parsing/conversão
-- Testes de integração BLE apenas em dispositivo físico
+- Test BLE protocol logic with real captured data (fixtures in `Tests/Fixtures/`)
+- Do not mock `CBCentralManager` in unit tests — test only parsing/conversion layers
+- BLE integration tests only on a physical device
 
 ---
 
@@ -559,22 +559,22 @@ xcodebuild test -scheme "My Band" -destination "platform=iOS Simulator,name=iPho
 
 ### Issue tracker
 
-Issues e specs são rastreados como GitHub Issues em `matheusdanoite/my-band`, usando a CLI `gh`. Ver `docs/agents/issue-tracker.md`.
+Issues and specs are tracked as GitHub Issues in `matheusdanoite/my-band`, using the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Vocabulário padrão de labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). Ver `docs/agents/triage-labels.md`.
+Default label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` + `docs/adr/` na raiz do repo. Ver `docs/agents/domain.md`.
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 ---
 
-## Referências
+## References
 
-- `AstroBox-NG-main/` — referência de protocolo BLE para wearables e estrutura de protobufs
-- [GadgetBridge Mi Band 8/9/10 source](https://codeberg.org/Freeyourgadget/Gadgetbridge) — implementação de referência do protocolo
-- [OpenWRT Mi Band community docs](https://github.com/argrento/huami-token) — extração de AuthKey via Xiaomi Cloud
+- `AstroBox-NG-main/` — BLE protocol reference for wearables and protobuf structure
+- [GadgetBridge Mi Band 8/9/10 source](https://codeberg.org/Freeyourgadget/Gadgetbridge) — reference implementation of the protocol
+- [OpenWRT Mi Band community docs](https://github.com/argrento/huami-token) — AuthKey extraction via Xiaomi Cloud
 - HealthKit Developer Documentation — Apple
 - App Intents Developer Documentation — Apple

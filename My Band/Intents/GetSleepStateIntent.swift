@@ -4,8 +4,8 @@ import OSLog
 
 // MARK: - GetSleepStateIntent
 //
-// "Você está dormindo?" — the Shortcuts-native replacement for the Home Assistant "sono
-// detectado" trigger that was cut from the roadmap. Instead of the app owning an automation
+// "Am I asleep?" — the Shortcuts-native replacement for the Home Assistant "sleep
+// detected" trigger that was cut from the roadmap. Instead of the app owning an automation
 // (turn off the bedroom lights, run a script), it just answers this question; the user's own
 // Shortcuts Personal Automation decides what to do with the answer.
 //
@@ -18,9 +18,9 @@ import OSLog
 
 struct GetSleepStateIntent: AppIntent {
 
-    static var title: LocalizedStringResource = "Ver se estou dormindo"
+    static var title: LocalizedStringResource = "Am I asleep"
     static var description = IntentDescription(
-        "Sincroniza com a Mi Band 10 e diz se você está dormindo, segundo o último dado de sono conhecido."
+        "Syncs with the Mi Band 10 and tells you whether you are asleep, based on the last known sleep data."
     )
 
     // Runs in the background without bringing the app to the foreground.
@@ -46,15 +46,15 @@ struct GetSleepStateIntent: AppIntent {
             _ = try await BackgroundSyncManager.shared.syncNow()
         } catch {
             syncFailed = true
-            Self.log.error("Sync do intent de sono falhou: \(error.localizedDescription)")
+            Self.log.error("Sleep intent sync failed: \(error.localizedDescription)")
         }
 
         guard let session = AppServices.shared.bandSyncer.mostRecentSleepSession() else {
             return .result(
                 value: false,
                 dialog: syncFailed
-                    ? "Não foi possível sincronizar com a pulseira e não há dado de sono local."
-                    : "Nenhum dado de sono sincronizado ainda."
+                    ? "Couldn't sync with the band and there is no local sleep data."
+                    : "No sleep data synced yet."
             )
         }
 
@@ -63,14 +63,14 @@ struct GetSleepStateIntent: AppIntent {
         let sleeping = age < Self.staleAfter && !lastPhaseIsAwake
 
         let freshness = RelativeDateTimeFormatter()
-        freshness.locale = Locale(identifier: "pt_BR")
+        freshness.locale = Locale(identifier: "en_US")
         freshness.unitsStyle = .abbreviated
         let asOf = freshness.localizedString(for: session.endDate, relativeTo: Date())
 
-        let caveat = syncFailed ? ", sem sincronizar agora" : ""
+        let caveat = syncFailed ? ", not synced just now" : ""
         let dialog = sleeping
-            ? "Sim, dormindo (dado de \(asOf)\(caveat))."
-            : "Não, acordado (dado de \(asOf)\(caveat))."
+            ? "Yes, asleep (data from \(asOf)\(caveat))."
+            : "No, awake (data from \(asOf)\(caveat))."
         return .result(value: sleeping, dialog: IntentDialog(stringLiteral: dialog))
     }
 }

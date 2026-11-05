@@ -19,14 +19,14 @@ enum SyncError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notConnected:       return "Pulseira não conectada."
-        case .noDeviceRecord:     return "Dispositivo não registrado. Autentique primeiro."
-        case .timeout:            return "Tempo esgotado durante sincronização."
-        case .emptyPayload:       return "Nenhum dado recebido da pulseira."
-        case .unexpectedResponse: return "Resposta inesperada da pulseira."
-        case .crcMismatch:        return "CRC-32 inválido no arquivo de atividade."
-        case .fileIdMismatch:     return "Arquivo recebido não corresponde ao solicitado."
-        case .sessionRestarted:   return "A pulseira reiniciou a sessão no meio da sincronização."
+        case .notConnected:       return "Band not connected."
+        case .noDeviceRecord:     return "Device not registered. Authenticate first."
+        case .timeout:            return "Timed out during sync."
+        case .emptyPayload:       return "No data received from the band."
+        case .unexpectedResponse: return "Unexpected response from the band."
+        case .crcMismatch:        return "Invalid CRC-32 in the activity file."
+        case .fileIdMismatch:     return "The received file does not match the requested one."
+        case .sessionRestarted:   return "The band restarted the session in the middle of the sync."
         }
     }
 }

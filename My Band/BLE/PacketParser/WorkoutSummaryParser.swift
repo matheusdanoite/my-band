@@ -12,7 +12,7 @@ enum WorkoutKind {
     case running, walking, hiking, trekking, trailRun, treadmill
     case outdoorCycling, indoorCycling
     case freeTraining, hiit, yoga
-    case strengthTraining                               // Treino de Força (code 17 / subtype 0x11)
+    case strengthTraining                               // Strength Training (code 17 / subtype 0x11)
     case poolSwim, openWaterSwim
     case elliptical, rowing, rowingMachine, jumpRoping
     case other

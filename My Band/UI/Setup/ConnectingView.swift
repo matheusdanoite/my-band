@@ -64,11 +64,11 @@ struct ConnectingView: View {
 
             if failed {
                 VStack(spacing: MB.Space.x3) {
-                    MBButton(title: "Tentar novamente", variant: .primary, size: .lg,
+                    MBButton(title: "Try again", variant: .primary, size: .lg,
                              icon: "arrow.clockwise", block: true, glow: true) {
                         onRetry()
                     }
-                    MBButton(title: "Usar outra AuthKey", variant: .ghost, size: .lg,
+                    MBButton(title: "Use a different AuthKey", variant: .ghost, size: .lg,
                              icon: "key.fill", block: true) {
                         onReconfigure()
                     }
@@ -110,18 +110,18 @@ struct ConnectingView: View {
         VStack(alignment: .leading, spacing: MB.Space.x3) {
             pairingStep(
                 index: 1,
-                title: "Aceite o pareamento na pulseira",
-                detail: "A pulseira mostra o pedido na tela. Toque para aceitar.",
+                title: "Accept pairing on the band",
+                detail: "The band shows the request on its screen. Tap to accept.",
                 stage: .band
             )
             pairingStep(
                 index: 2,
-                title: "Confirme no iPhone",
-                detail: "O iOS abre a folha de Bluetooth. Ela pode demorar alguns segundos depois do aceite na pulseira.",
+                title: "Confirm on iPhone",
+                detail: "iOS opens the Bluetooth sheet. It can take a few seconds after you accept on the band.",
                 stage: .phone
             )
             if let remaining = remainingSeconds {
-                Text("Aguardando você — \(remaining)s")
+                Text("Waiting for you — \(remaining)s")
                     .font(.mbMonoSm)
                     .foregroundStyle(MB.textTertiary)
                     .padding(.top, MB.Space.x1)
@@ -184,8 +184,8 @@ struct ConnectingView: View {
 
     private var pairingSubtitle: String {
         band.pairingStage == .phone
-            ? "Confirme a folha de pareamento no iPhone."
-            : "A pulseira está pedindo sua confirmação."
+            ? "Confirm the pairing sheet on your iPhone."
+            : "The band is asking for your confirmation."
     }
 
     private var remainingSeconds: Int? {
@@ -195,10 +195,10 @@ struct ConnectingView: View {
     }
 
     private var title: String {
-        if done { return "Pulseira conectada" }
-        if failed { return "Não foi possível conectar" }
-        if pairing { return "Confirme o pareamento" }
-        return "Conectando…"
+        if done { return "Band connected" }
+        if failed { return "Couldn't connect" }
+        if pairing { return "Confirm pairing" }
+        return "Connecting…"
     }
     private var tileIcon: String {
         if done { return "checkmark" }

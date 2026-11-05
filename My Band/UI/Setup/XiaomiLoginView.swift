@@ -28,7 +28,7 @@ struct XiaomiLoginView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MBIconButton(icon: "arrow.left", variant: .plain, accessibilityLabelText: "Voltar") {
+            MBIconButton(icon: "arrow.left", variant: .plain, accessibilityLabelText: "Back") {
                 auth.cancel()
                 onBack()
             }
@@ -50,19 +50,19 @@ struct XiaomiLoginView: View {
     private var content: some View {
         switch auth.phase {
         case .idle:
-            progress(title: "Preparando", subtitle: "Um instante…")
+            progress(title: "Preparing", subtitle: "One moment…")
         case .enteringCredentials:
             credentialsStep
         case .authenticating:
-            progress(title: "Autenticando", subtitle: "Verificando usuário e senha…")
+            progress(title: "Signing in", subtitle: "Verifying username and password…")
         case .awaitingCaptcha(let imageURL):
             captchaStep(imageURL)
         case .awaiting2FA:
             twoFAStep
         case .confirmingLogin:
-            progress(title: "Confirmando login", subtitle: "Validando a sessão com a Xiaomi…")
+            progress(title: "Confirming login", subtitle: "Validating the session with Xiaomi…")
         case .fetchingDevices:
-            progress(title: "Buscando pulseira", subtitle: "Lendo a chave da sua conta…")
+            progress(title: "Finding band", subtitle: "Reading the key from your account…")
         case .done:
             deviceStep
         case .failed(let message):
@@ -74,19 +74,19 @@ struct XiaomiLoginView: View {
 
     private var credentialsStep: some View {
         VStack(alignment: .leading, spacing: 22) {
-            header(title: "Entre na conta Xiaomi",
-                   subtitle: "Use o mesmo usuário e senha do app Xiaomi Home ou Mi Fitness. A senha é usada só para autenticar com a Xiaomi — nunca fica salva.")
+            header(title: "Sign in to your Xiaomi account",
+                   subtitle: "Use the same username and password as the Xiaomi Home or Mi Fitness app. The password is only used to authenticate with Xiaomi — it is never saved.")
 
             VStack(spacing: 14) {
-                MBTextField(label: "Usuário", text: $username, icon: "person",
-                            placeholder: "E-mail, telefone ou ID Xiaomi")
-                MBTextField(label: "Senha", text: $password, icon: "lock",
-                            placeholder: "Senha", secure: true)
+                MBTextField(label: "Username", text: $username, icon: "person",
+                            placeholder: "Email, phone or Xiaomi ID")
+                MBTextField(label: "Password", text: $password, icon: "lock",
+                            placeholder: "Password", secure: true)
             }
 
             Spacer()
 
-            MBButton(title: "Entrar", variant: .primary, size: .lg,
+            MBButton(title: "Sign in", variant: .primary, size: .lg,
                      icon: "arrow.right.circle", block: true, glow: true,
                      disabled: username.isEmpty || password.isEmpty) {
                 auth.submitCredentials(username: username, password: password)
@@ -99,8 +99,8 @@ struct XiaomiLoginView: View {
 
     private func captchaStep(_ imageURL: URL) -> some View {
         VStack(alignment: .leading, spacing: 22) {
-            header(title: "Confirme o captcha",
-                   subtitle: "A Xiaomi pediu essa verificação extra antes de continuar.")
+            header(title: "Confirm the captcha",
+                   subtitle: "Xiaomi asked for this extra verification before continuing.")
 
             AsyncImage(url: imageURL) { image in
                 image.resizable().interpolation(.none).scaledToFit()
@@ -113,10 +113,10 @@ struct XiaomiLoginView: View {
             .mbCornerRadius(MB.Radius.md)
 
             MBTextField(label: "Captcha", text: $captchaCode, icon: "textformat.abc",
-                        placeholder: "Digite o texto da imagem")
+                        placeholder: "Type the text in the image")
 
             Spacer()
-            MBButton(title: "Confirmar", variant: .primary, size: .lg,
+            MBButton(title: "Confirm", variant: .primary, size: .lg,
                      icon: "checkmark", block: true, glow: true,
                      disabled: captchaCode.isEmpty) {
                 auth.submitCaptcha(captchaCode)
@@ -130,14 +130,14 @@ struct XiaomiLoginView: View {
 
     private var twoFAStep: some View {
         VStack(alignment: .leading, spacing: 22) {
-            header(title: "Verificação em duas etapas",
-                   subtitle: "A Xiaomi enviou um código para o e-mail da conta. Insira-o abaixo para confirmar que é você.")
+            header(title: "Two-step verification",
+                   subtitle: "Xiaomi sent a code to the account email. Enter it below to confirm it's you.")
 
-            MBTextField(label: "Código", text: $twoFACode, icon: "envelope",
-                        placeholder: "Código recebido por e-mail", mono: true)
+            MBTextField(label: "Code", text: $twoFACode, icon: "envelope",
+                        placeholder: "Code received by email", mono: true)
 
             Spacer()
-            MBButton(title: "Confirmar", variant: .primary, size: .lg,
+            MBButton(title: "Confirm", variant: .primary, size: .lg,
                      icon: "checkmark", block: true, glow: true,
                      disabled: twoFACode.isEmpty) {
                 auth.submit2FACode(twoFACode)
@@ -151,8 +151,8 @@ struct XiaomiLoginView: View {
 
     private var deviceStep: some View {
         VStack(alignment: .leading, spacing: 22) {
-            header(title: auth.bands.count == 1 ? "Pulseira encontrada" : "Escolha a pulseira",
-                   subtitle: "A chave fica guardada apenas no Keychain deste aparelho.")
+            header(title: auth.bands.count == 1 ? "Band found" : "Choose your band",
+                   subtitle: "The key is stored only in this device's Keychain.")
 
             VStack(spacing: 12) {
                 ForEach(auth.bands) { band in
@@ -198,9 +198,9 @@ struct XiaomiLoginView: View {
 
     private func failure(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 22) {
-            header(title: "Não foi possível extrair", subtitle: message)
+            header(title: "Couldn't extract the key", subtitle: message)
             Spacer()
-            MBButton(title: "Tentar novamente", variant: .primary, size: .lg,
+            MBButton(title: "Try again", variant: .primary, size: .lg,
                      icon: "arrow.clockwise", block: true, glow: true) {
                 selectionError = nil
                 password = ""
@@ -241,7 +241,7 @@ struct XiaomiLoginView: View {
 
     private var manualLink: some View {
         Button { auth.cancel(); onManual() } label: {
-            Text("Inserir AuthKey manualmente")
+            Text("Enter AuthKey manually")
                 .font(.mbSubheadEmph)
                 .foregroundStyle(MB.accent200)
                 .frame(maxWidth: .infinity)

@@ -1,144 +1,144 @@
 # AGENTS.md — My Band
 
-Diretrizes para agentes de IA (Claude, Codex, etc.) que trabalham neste projeto.
+Guidelines for AI agents (Claude, Codex, etc.) working on this project.
 
 ---
 
-## Contexto do Projeto
+## Project Context
 
-**My Band** é um app iOS/macOS universal em SwiftUI que:
-1. Conecta à Mi Band 10 via CoreBluetooth usando protocolo XiaomiSppPacketV2 com autenticação HMAC-SHA256 e AuthKey
-2. Sincroniza dados de sono, frequência cardíaca e atividade para o Apple Health (HealthKit)
-3. Expõe estado e ações via App Intents para integração com Atalhos e Siri
-4. (Futuro) Exibe um mini app customizado na pulseira com botões acionáveis
+**My Band** is a universal iOS/macOS SwiftUI app that:
+1. Connects to the Mi Band 10 via CoreBluetooth using the XiaomiSppPacketV2 protocol with HMAC-SHA256 authentication and an AuthKey
+2. Syncs sleep, heart rate and activity data to Apple Health (HealthKit)
+3. Exposes state and actions via App Intents for integration with Shortcuts and Siri
+4. (Future) Shows a custom mini app on the band with actionable buttons
 
-Plataformas: iOS 17+ e macOS 14+. Distribuição: sideload pessoal.
-
----
-
-## O que Ler Antes de Qualquer Modificação
-
-1. `CLAUDE.md` — arquitetura completa, protocolo BLE, convenções de código
-2. O arquivo que você vai modificar — leia inteiro antes de editar
-3. Se tocar em BLE: `BLE/BandProtocol.swift` e `BLE/Services/MiBandUUID.swift`
-4. Se tocar em dados: o model SwiftData correspondente em `Models/`
+Platforms: iOS 17+ and macOS 14+. Distribution: personal sideload.
 
 ---
 
-## Regras por Área
+## What to Read Before Any Change
+
+1. `CLAUDE.md` — full architecture, BLE protocol, code conventions
+2. The file you are going to modify — read it in full before editing
+3. If you touch BLE: `BLE/BandProtocol.swift` and `BLE/Services/MiBandUUID.swift`
+4. If you touch data: the matching SwiftData model in `Models/`
+
+---
+
+## Rules by Area
 
 ### BLE (`BLE/`)
 
-- `BandManager` é `@Observable @MainActor NSObject` — acesso ao estado sempre na main thread; não despachar para outra fila sem `Task { @MainActor in ... }`
-- O handshake de autenticação é **sequencial e stateful** — não paralelizar etapas
-- Ao modificar parsing de pacotes, adicionar um fixture em `Tests/Fixtures/` com bytes reais capturados e um teste correspondente
-- Nunca reconectar em loop infinito — usar backoff exponencial com máximo de 5 tentativas
-- UUIDs de características GATT ficam apenas em `MiBandUUID.swift` — não hardcodar strings em outros arquivos
-- Protocolo V2: `XiaomiSppPacketV2`, serviço `FE95`, TX `005E`, RX `005F`. UUIDs legados FEE0/FEE1 e `0x0009` são para Mi Band 5/6 — não usar.
-- Primitivas criptográficas ficam em `BLE/Crypto/XiaomiCrypto.swift`; builders/parsers protobuf em `BLE/Protocol/XiaomiProto.swift` (camada fina sobre os tipos gerados em `xiaomi.pb.swift` via SwiftProtobuf)
-- `startScan()` pode ser chamado antes do BT estar pronto — o flag `pendingScan` em `BandManager` lida com isso; não remover essa lógica
-- **ACK obrigatório**: o SPP V2 é um transporte confiável com janela. **Toda frame DATA recebida precisa ser confirmada** com `sendAck(seqNum:)` usando o `seqNum` recebido. Sem isso a pulseira retransmite o handshake inteiro a cada ~6 s. Não remover.
-- **Init pós-auth**: após `Authentication successful`, enviar `sendPostAuthInit()` (setCurrentTime + device info/state/battery). Sem isso a pulseira considera a sessão incompleta e re-dispara auth.
-- **Um HMAC divergente não é sinônimo de AuthKey errada** (ver ADR 0003). Quatro causas, só uma é chave errada: a pulseira ainda espera o aceite do usuário (`sub=16` → `.awaitingPairingConfirmation`), o nonce chegou depois do nosso `CMD_AUTH` (`authStep3Sent` — quem decide é o `sub=27`), corrida de nonce (até `maxNonceMismatches` toleradas), ou a chave está errada mesmo. Só o último caso escala para `retryAuthAfterReconnect()` (limite `maxAuthRetries`, teardown com atraso crescente). Não voltar a derrubar o link na primeira divergência: no pareamento isso dispensa o próprio prompt que estamos esperando.
-- **Session config recebido em `.connected` = a pulseira abriu uma sessão nova.** Refazer o handshake e rederivar as chaves (`maxBandSessionRestarts`), como o GadgetBridge faz a todo pacote de session config. Ignorar deixa o app cifrando com chaves mortas — a pulseira ACKa o transporte e descarta o comando em silêncio, e o sync fica pendurado até o timeout com o link parecendo saudável. A guarda de duplicata vale **apenas** para `.authenticating` (bug do 005F).
-- **Watchdog de auth**: `armAuthWatchdog()` (20 s; 120 s durante o pareamento) re-armado por todo pacote de auth que progride. `AuthError.timeout` é timeout de verdade; queda de link é `AuthError.linkDropped`. Não confundir os dois de novo.
-- Testes de BLE requerem iPhone físico — o Simulator e o Mac não conectam com a Mi Band. **Autenticação confirmada em hardware real (Mi Band 10) em 2026-06-19.**
+- `BandManager` is `@Observable @MainActor NSObject` — always access state on the main thread; do not dispatch to another queue without `Task { @MainActor in ... }`
+- The authentication handshake is **sequential and stateful** — do not parallelize steps
+- When changing packet parsing, add a fixture in `Tests/Fixtures/` with real captured bytes and a matching test
+- Never reconnect in an infinite loop — use exponential backoff with a maximum of 5 attempts
+- GATT characteristic UUIDs live only in `MiBandUUID.swift` — do not hardcode strings in other files
+- V2 protocol: `XiaomiSppPacketV2`, service `FE95`, TX `005E`, RX `005F`. Legacy UUIDs FEE0/FEE1 and `0x0009` are for Mi Band 5/6 — do not use.
+- Cryptographic primitives live in `BLE/Crypto/XiaomiCrypto.swift`; protobuf builders/parsers in `BLE/Protocol/XiaomiProto.swift` (thin layer over the types generated in `xiaomi.pb.swift` via SwiftProtobuf)
+- `startScan()` may be called before BT is ready — the `pendingScan` flag in `BandManager` handles this; do not remove that logic
+- **ACK is mandatory**: SPP V2 is a reliable transport with a window. **Every received DATA frame must be confirmed** with `sendAck(seqNum:)` using the received `seqNum`. Without it the band retransmits the entire handshake every ~6 s. Do not remove.
+- **Post-auth init**: after `Authentication successful`, send `sendPostAuthInit()` (setCurrentTime + device info/state/battery). Without it the band considers the session incomplete and re-triggers auth.
+- **A mismatched HMAC is not synonymous with a wrong AuthKey** (see ADR 0003). Four causes, only one is a wrong key: the band is still waiting for the user's acceptance (`sub=16` → `.awaitingPairingConfirmation`), the nonce arrived after our `CMD_AUTH` (`authStep3Sent` — `sub=27` decides), a nonce race (up to `maxNonceMismatches` tolerated), or the key really is wrong. Only the last case escalates to `retryAuthAfterReconnect()` (limit `maxAuthRetries`, teardown with increasing delay). Do not go back to dropping the link on the first mismatch: during pairing that dismisses the very prompt we are waiting for.
+- **Session config received in `.connected` = the band opened a new session.** Redo the handshake and re-derive the keys (`maxBandSessionRestarts`), as GadgetBridge does on every session-config packet. Ignoring it leaves the app encrypting with dead keys — the band ACKs the transport and silently discards the command, and the sync hangs until the timeout with the link looking healthy. The duplicate guard applies **only** to `.authenticating` (the 005F bug).
+- **Auth watchdog**: `armAuthWatchdog()` (20 s; 120 s during pairing) re-armed by every auth packet that makes progress. `AuthError.timeout` is a real timeout; a link drop is `AuthError.linkDropped`. Do not confuse the two again.
+- BLE tests require a physical iPhone — the Simulator and the Mac do not connect to the Mi Band. **Authentication confirmed on real hardware (Mi Band 10) on 2026-06-19.**
 
 ### Auth / Keychain (`Auth/`)
 
-- AuthKey **nunca** em SwiftData, UserDefaults, logs ou prints
-- Credenciais Xiaomi Cloud (email, senha) **nunca** persistidas — usar apenas em memória durante o fluxo de extração
-- Ao escrever no Keychain: usar `kSecAttrAccessibleAfterFirstUnlock` para acessibilidade em background
-- **A AuthKey é o único estado que o app não reconstrói sozinho** (ver ADR 0004). O `service` do item é uma constante fixa, não o bundle id — mudá-la sem migração perde a chave. `save` atualiza no lugar (nunca `delete`+`add`). `isStored` distingue `.notFound` de `.locked`: um Keychain bloqueado (relaunch em background antes do primeiro desbloqueio pós-boot) **não** é "sem chave" — responder `false` ali manda um usuário pareado de volta ao setup.
+- AuthKey **never** in SwiftData, UserDefaults, logs or prints
+- Xiaomi Cloud credentials (email, password) **never** persisted — use only in memory during the extraction flow
+- When writing to the Keychain: use `kSecAttrAccessibleAfterFirstUnlock` for background accessibility
+- **The AuthKey is the only state the app cannot rebuild on its own** (see ADR 0004). The item's `service` is a fixed constant, not the bundle id — changing it without a migration loses the key. `save` updates in place (never `delete`+`add`). `isStored` distinguishes `.notFound` from `.locked`: a locked Keychain (background relaunch before the first unlock after boot) is **not** "no key" — answering `false` there sends a paired user back to setup.
 
 ### HealthKit (`Health/`)
 
-- Sempre verificar autorização antes de escrever — `HKHealthStore.authorizationStatus(for:)`
-- Implementar deduplicação: consultar amostras existentes no mesmo período antes de inserir
-- Usar `HKQueryAnchor` persistido em SwiftData para sincronizações incrementais (não re-sincronizar tudo a cada vez)
-- Fases de sono: mapear para `HKCategoryValueSleepAnalysis` (.inBed, .asleepCore, .asleepDeep, .asleepREM, .awake)
-- **Nunca** incluir `HKCategoryType(.appleStandHour)` em `requestAuthorization(toShare:)` — é reservado e lança `NSInvalidArgumentException` (apps de terceiros não podem gravá-lo)
-- Treinos: usar `HKWorkoutBuilder` (não o init depreciado de `HKWorkout`); rota GPS via `HKWorkoutRouteBuilder.insertRouteData` + `finishRoute(with:)`
+- Always check authorization before writing — `HKHealthStore.authorizationStatus(for:)`
+- Implement deduplication: query existing samples in the same period before inserting
+- Use an `HKQueryAnchor` persisted in SwiftData for incremental syncs (do not re-sync everything every time)
+- Sleep phases: map to `HKCategoryValueSleepAnalysis` (.inBed, .asleepCore, .asleepDeep, .asleepREM, .awake)
+- **Never** include `HKCategoryType(.appleStandHour)` in `requestAuthorization(toShare:)` — it is reserved and throws `NSInvalidArgumentException` (third-party apps cannot write it)
+- Workouts: use `HKWorkoutBuilder` (not the deprecated `HKWorkout` init); GPS route via `HKWorkoutRouteBuilder.insertRouteData` + `finishRoute(with:)`
 
 ### App Intents (`Intents/`)
 
-- Cada Intent deve ter `title` e `description` claros para aparecer bem no app Atalhos
-- `perform()` deve retornar resultado útil — não retornar vazio quando há dado disponível
-- Parâmetros de data devem ter valores default razoáveis (ex: "hoje" para `GetSleepDataIntent`)
-- Registrar frases Siri em `BandShortcuts.swift` via `AppShortcutsProvider`
-- Um intent feito para rodar dentro de uma Automação Pessoal (que dispara sozinha, com frequência) deve ser **silencioso no caso comum** — sem diálogo quando não há nada a dizer, como o `CheckBandBatteryIntent`, que só notifica abaixo do limite. Diálogo a cada execução vira ruído e a pessoa desliga a automação.
-- Intent que depende do link BLE não deve falhar quando a pulseira está fora de alcance: sincronizar é best-effort e a resposta cai no último dado conhecido — uma exceção derruba a automação inteira
+- Each Intent must have a clear `title` and `description` so it shows up well in the Shortcuts app
+- `perform()` must return a useful result — do not return empty when data is available
+- Date parameters must have reasonable default values (e.g. "today" for `GetSleepDataIntent`)
+- Register Siri phrases in `BandShortcuts.swift` via `AppShortcutsProvider`
+- An intent made to run inside a Personal Automation (which fires on its own, often) must be **silent in the common case** — no dialog when there is nothing to say, like `CheckBandBatteryIntent`, which only notifies below the threshold. A dialog on every run becomes noise and the person turns the automation off.
+- An intent that depends on the BLE link must not fail when the band is out of range: syncing is best-effort and the answer falls back to the last known data — an exception brings down the whole automation
 
 ### UI (`UI/`)
 
-- **Design system**: a UI segue o handoff do Claude Design (`My Band — Design System`). Antes de criar telas, ler o README do bundle e os tokens (`tokens/colors.css`, `typography.css`, `spacing.css`) e os componentes em `components/`. Recriar fielmente em SwiftUI — não copiar a estrutura HTML, e sim o resultado visual.
-- **Dark-mode first**, paleta midnight (`#0A0B10` base, cards `#14161F`), um único accent Aurora indigo `#7C7FFF`. Cores de saúde espelham o Apple Health; rampa de fases de sono dusk→deep-night.
-- Copy em **pt-BR**, sentence case, sem emoji; números são heróis (tabular). Status sempre por cor + SF Symbol (nunca cor sozinha).
-- SwiftUI puro — sem UIKit direto exceto onde absolutamente necessário (ex: `UIApplication` para background tasks)
-- Suporte a macOS via `#if os(macOS)` / `#if os(iOS)` quando comportamentos divergem
-- Não criar telas separadas para Mac e iPhone — usar `NavigationSplitView` para adaptar layout
-- Dados de sono são a funcionalidade prioritária — dashboard deve exibi-los em destaque
-- Status de conexão e frescor do sync são first-class — presentes em toda tela, nunca enterrados
+- **Design system**: the UI follows the Claude Design handoff (`My Band — Design System`). Before creating screens, read the bundle's README and the tokens (`tokens/colors.css`, `typography.css`, `spacing.css`) and the components in `components/`. Faithfully recreate in SwiftUI — do not copy the HTML structure, copy the visual result.
+- **Dark-mode first**, midnight palette (`#0A0B10` base, cards `#14161F`), a single Aurora indigo accent `#7C7FFF`. Health colors mirror Apple Health; sleep-phase ramp dusk→deep-night.
+- Copy in **English**, sentence case, no emoji; numbers are heroes (tabular). Status always by color + SF Symbol (never color alone).
+- Pure SwiftUI — no direct UIKit except where absolutely necessary (e.g. `UIApplication` for background tasks)
+- macOS support via `#if os(macOS)` / `#if os(iOS)` when behaviors diverge
+- Do not create separate screens for Mac and iPhone — use `NavigationSplitView` to adapt the layout
+- Sleep data is the priority feature — the dashboard must show it prominently
+- Connection status and sync freshness are first-class — present on every screen, never buried
 
 ### Models (`Models/`)
 
-- SwiftData models são a fonte de verdade para dados históricos
-- `BandDevice` guarda apenas identificadores — AuthKey fica no Keychain
-- Ao adicionar campo a um model, sempre definir valor default para migração automática
+- SwiftData models are the source of truth for historical data
+- `BandDevice` stores only identifiers — the AuthKey lives in the Keychain
+- When adding a field to a model, always set a default value for automatic migration
 
 ---
 
-## O que Não Fazer
+## What Not to Do
 
-- **Não usar Combine** — projeto usa async/await e @Observable exclusivamente
-- **Não usar UserDefaults para dados sensíveis** — apenas Keychain
-- **Não adicionar dependências externas (SPM)** sem discutir. Dependências aprovadas até agora: **SwiftProtobuf** (`apple/swift-protobuf`, usado para os tipos gerados em `xiaomi.pb.swift`). Qualquer nova precisa de justificativa e aprovação.
-- **Não criar arquivos de documentação ad-hoc** (NOTES, TODO solto) — usar comentários inline só quando WHY não é óbvio
-- **Sempre atualizar `CHANGELOG.md`** ao adicionar, alterar ou corrigir qualquer coisa notável. Entradas vão em `## [Unreleased]` nas categorias `Added / Changed / Deprecated / Removed / Fixed / Security` conforme [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Não registrar refatorações internas triviais, apenas mudanças que um futuro leitor do histórico precisaria saber.
-- **Não mockar CBCentralManager em testes** — testar apenas camadas de parsing independentes de BLE
-- **Não escrever dados no HealthKit sem autorização explícita do usuário** — verificar `authorizationStatus` sempre
-- **Não criar `Info.plist` dentro de `My Band/My Band/`** — o projeto usa `PBXFileSystemSynchronizedRootGroup` (Xcode 16), que inclui automaticamente todos os arquivos da pasta no build. Um Info.plist ali dentro causa "Multiple commands produce Info.plist". O `Info.plist` fica em `$(SRCROOT)/Info.plist` (raiz do projeto), com `GENERATE_INFOPLIST_FILE = NO` e `INFOPLIST_FILE = "Info.plist"` no pbxproj.
+- **Do not use Combine** — the project uses async/await and @Observable exclusively
+- **Do not use UserDefaults for sensitive data** — Keychain only
+- **Do not add external dependencies (SPM)** without discussing. Dependencies approved so far: **SwiftProtobuf** (`apple/swift-protobuf`, used for the types generated in `xiaomi.pb.swift`). Any new one needs justification and approval.
+- **Do not create ad-hoc documentation files** (NOTES, loose TODOs) — use inline comments only when the WHY is not obvious
+- **Always update `CHANGELOG.md`** when adding, changing or fixing anything notable. Entries go under `## [Unreleased]` in the categories `Added / Changed / Deprecated / Removed / Fixed / Security` per [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Do not record trivial internal refactors, only changes a future reader of the history would need to know.
+- **Do not mock CBCentralManager in tests** — test only parsing layers that are independent of BLE
+- **Do not write data to HealthKit without the user's explicit authorization** — always check `authorizationStatus`
+- **Do not create an `Info.plist` inside `My Band/My Band/`** — the project uses `PBXFileSystemSynchronizedRootGroup` (Xcode 16), which automatically includes every file in the folder in the build. An Info.plist in there causes "Multiple commands produce Info.plist". The `Info.plist` lives at `$(SRCROOT)/Info.plist` (project root), with `GENERATE_INFOPLIST_FILE = NO` and `INFOPLIST_FILE = "Info.plist"` in the pbxproj.
 
 ---
 
-## Compilar e Testar
+## Build and Test
 
 ```bash
-# Build no simulador
+# Build on the simulator
 xcodebuild -scheme "My Band" -destination "platform=iOS Simulator,name=iPhone 15 Pro" build
 
-# Testes de unidade (parsers, conversões, lógica HA)
+# Unit tests (parsers, conversions, HA logic)
 xcodebuild test -scheme "My Band" -destination "platform=iOS Simulator,name=iPhone 15 Pro"
 ```
 
-- Testes de protocolo BLE: usar dados de fixture (bytes capturados de sessão real), nunca dispositivo ao vivo
-- Testes de HealthKit: usar `HKHealthStore` com mock via protocolo — nunca escrever no Health real em CI
+- BLE protocol tests: use fixture data (bytes captured from a real session), never a live device
+- HealthKit tests: use `HKHealthStore` with a protocol-based mock — never write to the real Health in CI
 
 ---
 
-## Fase Futura: Mini App na Pulseira
+## Future Phase: Mini App on the Band
 
-A Mi Band 10 suporta mini apps via protocolo proprietário ainda em processo de engenharia reversa. Quando chegar a hora:
-- Criar módulo `MiniApp/` separado
-- O mini app roda na pulseira e envia eventos de botão via BLE para o `BandManager`
-- Esses eventos devem disparar `AppIntent` correspondentes
-- Não implementar nada em `MiniApp/` até que haja documentação de protocolo confirmada
+The Mi Band 10 supports mini apps via a proprietary protocol that is still being reverse engineered. When the time comes:
+- Create a separate `MiniApp/` module
+- The mini app runs on the band and sends button events over BLE to the `BandManager`
+- Those events must trigger the corresponding `AppIntent`s
+- Do not implement anything in `MiniApp/` until there is confirmed protocol documentation
 
 ---
 
-## Fluxo de Desenvolvimento Recomendado
+## Recommended Development Flow
 
-- [x] **Camada BLE V2** — `MiBandUUID` (FE95/005E/005F), `BandProtocol` (XiaomiSppPacketV2 + CRC-16/ARC), `BandAuthenticator` (HMAC-SHA256), `BandScanner`, `BandManager`, `AuthKeyStore` — compilando em 2026-06-07
-- [x] **Crypto + Proto** — `XiaomiCrypto` (HMAC-SHA256, HKDF, AES-CTR/CCM via CommonCrypto) e `XiaomiProto` (migrado para SwiftProtobuf + `xiaomi.pb.swift` gerado do GadgetBridge)
-- [x] **Persistência base** — `BandDevice`, `SleepSession`, `ActivityDay` SwiftData; `BandSyncer`; `SleepPacketParser` (2-byte entries V2)
-- [x] **Info.plist manual** — corrige crash `NSInternalInconsistencyException` do CBCentralManager (UIBackgroundModes como `<array>`)
-- [x] **Teste em hardware real (2026-06-19)** — auth completa na Mi Band 10: handshake HMAC-SHA256, retry de primeiro pareamento, ACK de transporte, init pós-auth, comunicação cifrada estável. AuthKey validado.
-- [x] **UI: design system + Setup (2026-06-19)** — tokens e componentes (`MBButton`/`MBIconButton`/`MBTextField`/`MBStatusPill`), `SetupView` (intro + AuthKey) e `ConnectingView` ligados ao `BandManager` real; `RootView` roteando os estados
-- [x] **HealthKit + Dashboard (2026-06-19)** — `HealthKitManager` (sono/passos/calorias/distância/HR/SpO₂ com dedup), parsers `DailySummary`/`DailyDetails`, `BandSyncer.syncToHealth()`, bateria no `BandManager` e `DashboardView` (bateria + última sync + botão). **Pendente validação em hardware** (formato dos arquivos de atividade, passos cumulativo vs delta).
-- [x] **Parsers de medição manual + treinos (2026-06-19)** — `ManualSamplesParser` (FC/SpO₂/estresse/temperatura), `WorkoutSummaryParser` (+ builder posicional, todas as modalidades) e `WorkoutGpsParser`; `HealthKitManager` grava `HKWorkout`/rota GPS/VO₂máx/temperatura/FC de repouso. Corrigido crash de autorização do `appleStandHour`. **Pendente validação em hardware.**
-- [ ] **UI: SleepDetail + Settings** → próximas telas do handoff do Claude Design
-- [ ] **Parsers de device info / bateria** → `Proto command type=2` ainda só logados; parsear para alimentar o Dashboard
-- [x] **HealthKit** → `HealthKitManager` + reconciliação por minuto + deduplicação
+- [x] **BLE V2 layer** — `MiBandUUID` (FE95/005E/005F), `BandProtocol` (XiaomiSppPacketV2 + CRC-16/ARC), `BandAuthenticator` (HMAC-SHA256), `BandScanner`, `BandManager`, `AuthKeyStore` — compiling on 2026-06-07
+- [x] **Crypto + Proto** — `XiaomiCrypto` (HMAC-SHA256, HKDF, AES-CTR/CCM via CommonCrypto) and `XiaomiProto` (migrated to SwiftProtobuf + `xiaomi.pb.swift` generated from GadgetBridge)
+- [x] **Base persistence** — `BandDevice`, `SleepSession`, `ActivityDay` SwiftData; `BandSyncer`; `SleepPacketParser` (V2 2-byte entries)
+- [x] **Manual Info.plist** — fixes the CBCentralManager `NSInternalInconsistencyException` crash (UIBackgroundModes as `<array>`)
+- [x] **Test on real hardware (2026-06-19)** — full auth on the Mi Band 10: HMAC-SHA256 handshake, first-pairing retry, transport ACK, post-auth init, stable encrypted communication. AuthKey validated.
+- [x] **UI: design system + Setup (2026-06-19)** — tokens and components (`MBButton`/`MBIconButton`/`MBTextField`/`MBStatusPill`), `SetupView` (intro + AuthKey) and `ConnectingView` wired to the real `BandManager`; `RootView` routing the states
+- [x] **HealthKit + Dashboard (2026-06-19)** — `HealthKitManager` (sleep/steps/calories/distance/HR/SpO₂ with dedup), `DailySummary`/`DailyDetails` parsers, `BandSyncer.syncToHealth()`, battery in `BandManager` and `DashboardView` (battery + last sync + button). **Hardware validation pending** (activity file format, cumulative vs delta steps).
+- [x] **Manual-measurement + workout parsers (2026-06-19)** — `ManualSamplesParser` (HR/SpO₂/stress/temperature), `WorkoutSummaryParser` (+ positional builder, all sport types) and `WorkoutGpsParser`; `HealthKitManager` writes `HKWorkout`/GPS route/VO₂ max/temperature/resting HR. Fixed the `appleStandHour` authorization crash. **Hardware validation pending.**
+- [ ] **UI: SleepDetail + Settings** → next screens from the Claude Design handoff
+- [ ] **Device info / battery parsers** → `Proto command type=2` still only logged; parse to feed the Dashboard
+- [x] **HealthKit** → `HealthKitManager` + per-minute reconciliation + deduplication
 - [x] **App Intents** → `SyncBandIntent` + `GetSleepStateIntent` + `CheckBandBatteryIntent` + `BandShortcuts`
-- [x] **AuthKey via Xiaomi Cloud** → `XiaomiCloudAuth` por usuário/senha (fluxo alternativo ao manual)
-- [ ] **Mini App** → (fase futura, aguardar definição de protocolo)
+- [x] **AuthKey via Xiaomi Cloud** → `XiaomiCloudAuth` by username/password (alternative flow to manual)
+- [ ] **Mini App** → (future phase, wait for protocol definition)
