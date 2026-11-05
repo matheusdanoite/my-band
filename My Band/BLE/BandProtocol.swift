@@ -275,6 +275,8 @@ enum XiaomiHealthCmd {
     static let realtimeStart:    UInt32 = 45  // CMD_REALTIME_STATS_START  (app → band)
     static let realtimeStop:     UInt32 = 46  // CMD_REALTIME_STATS_STOP   (app → band)
     static let realtimeEvent:    UInt32 = 47  // CMD_REALTIME_STATS_EVENT  (band → app: RealTimeStats)
+    static let rawSensorAck:     UInt32 = 49  // PHONE_SPORT_DATA_V2A
+    static let rawSensorBatch:   UInt32 = 53  // WEAR_SENSOR_DATA
 }
 
 // MARK: - Watch face command IDs (GadgetBridge XiaomiWatchfaceService, type=4)

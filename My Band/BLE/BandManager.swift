@@ -240,6 +240,10 @@ final class BandManager: NSObject {
     /// Called for each live real-time stats event (Health, subtype=47) while realtime is enabled.
     /// Param = the current heart rate in bpm. Driven by setRealtimeStats(enabled:).
     var onRealtimeStats:         ((Int) -> Void)?
+    /// Called when the synthetic raw-sensor workout asks to be opened.
+    var onRawSensorWorkoutOpen:  (() -> Void)?
+    /// Called for each raw-sensor protobuf batch (Health, subtype=53).
+    var onRawSensorCommand:      ((Data) -> Void)?
     /// Called with the band-assigned id when a Schedule item (e.g. a reminder) is created
     /// (Schedule command carrying schedule.ackId). CalendarSyncService uses it to track which
     /// reminders to delete on the next sync.
@@ -832,13 +836,24 @@ final class BandManager: NSObject {
         switch subtype {
         case XiaomiHealthCmd.workoutOpen where cmd.hasHealth && cmd.health.hasWorkoutOpenWatch:
             let sport = cmd.health.workoutOpenWatch.sport
+            if sport == XiaomiRawSensorProtocol.syntheticSport {
+                log.info("Raw sensor workout open request")
+                onRawSensorWorkoutOpen?()
+                return
+            }
             log.info("Workout GPS request (sport=\(sport)) — forwarding to WorkoutGpsService")
             onWorkoutOpenWatch?(sport)
         case XiaomiHealthCmd.workoutStatus where cmd.hasHealth && cmd.health.hasWorkoutStatusWatch:
             let watch = cmd.health.workoutStatusWatch
             let fileIds = watch.hasActivityFileIds ? watch.activityFileIds : Data()
+            if watch.sport == XiaomiRawSensorProtocol.syntheticSport {
+                log.debug("Raw sensor workout status \(watch.status)")
+                return
+            }
             log.info("Workout status update: \(watch.status) (\(fileIds.count / 7) file id(s))")
             onWorkoutStatusWatch?(watch.status, fileIds)
+        case XiaomiHealthCmd.rawSensorBatch:
+            onRawSensorCommand?(protoBytes)
         case XiaomiHealthCmd.realtimeEvent where cmd.hasHealth && cmd.health.hasRealTimeStats:
             let stats = cmd.health.realTimeStats
             if stats.hasHeartRate, stats.heartRate > 0 { onRealtimeStats?(Int(stats.heartRate)) }
