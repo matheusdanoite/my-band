@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import HealthKit
 @testable import My_Band
 
 // Synthetic sleep files built to the documented layouts — the fixtures hold no real sleep capture
@@ -115,6 +116,42 @@ struct SleepParserTests {
         #expect(minutes(.deep) == 125)
         #expect(minutes(.rem) == 86)
         #expect(minutes(.awake) == 22)
+        #expect(parsed.hasSpO2Section == true)
+        #expect(parsed.spo2.count == 35)
+        #expect(parsed.spo2.prefix(10).map(\.pct) == [97, 93, 93, 95, 94, 94, 95, 94, 97, 97])
+        #expect(parsed.heartRates.count == 301)
+    }
+
+    @Test func detailsParserSynthesizesShortSleepFromSummaryOnlyWhenFinalized() {
+        func shortSleepFile(awakeFlag: UInt8) -> [UInt8] {
+            var b = fileId(version: 5, subtype: 0x08, detail: 1)
+            b += [0]                                    // padding
+            b += [0xDF, 0x00]                           // v5 header (no HR/SpO₂ sections)
+            b += [awakeFlag]                            // isAwake
+            b += le32(bed) + le32(bed + 67 * 60)        // bedTime, wakeupTime (67 min)
+            b += [0]                                    // sleepQuality (bit 3)
+            b += [UInt8](repeating: 0, count: 9)        // v5 unknown (9B)
+            b += le32(bed) + le32(bed + 67 * 60)        // bedTime2, wakeupTime2
+            // Type 16 summary: 67 min total sleep (0x0043), 0 wake/light/rem/deep, 0x0100 flag
+            let summary: [UInt8] = [0x10] + be16(67) + be16(0) + be16(0) + be16(0) + be16(0) + [0x01, 0x00]
+            b += [0xFB, 0xFA, 0xFC, 0xFF, 17] + le64(bed) + [0, 16] + be16(summary.count) + summary
+            // Type 17 stages: empty (band only scores stages for sessions ≥ 3h)
+            b += [0xFB, 0xFA, 0xFC, 0xFF, 17] + le64(bed) + [0, 17] + be16(0)
+            return b + crc
+        }
+
+        // In-progress (< 3h, awakeFlag == 0): sessions stays empty so BandSyncer holds the ACK.
+        let openBytes = shortSleepFile(awakeFlag: 0)
+        let parsedOpen = SleepDetailsParser.parse(Data(openBytes), meta: meta(openBytes))
+        #expect(parsedOpen.sessions.isEmpty)
+
+        // Finalized (< 3h, awakeFlag == 1): synthesized from type-16 total sleep duration (67 min).
+        let closedBytes = shortSleepFile(awakeFlag: 1)
+        let parsedClosed = SleepDetailsParser.parse(Data(closedBytes), meta: meta(closedBytes))
+        #expect(parsedClosed.sessions.count == 1)
+        #expect(parsedClosed.sessions.first?.phases == [
+            SleepPhase(startDate: at(0), endDate: at(67 * 60), type: .light)
+        ])
     }
 
     @Test func detailsParserRejectsAnUnknownVersionInsteadOfGuessingOffsets() {
@@ -201,5 +238,29 @@ struct SleepParserTests {
         let placeholder = [UInt8](repeating: 0, count: 7)
         let ids = BandSyncer.splitFileIds(Data(real + placeholder))
         #expect(ids == [Data(real)])
+    }
+
+    @Test func walkingHeartRateAverageFiltersSteadyWalkingMinutes() {
+        let now = Date(timeIntervalSince1970: 1_730_000_000)
+        let samples = [
+            ActivityMinuteSample(date: now, steps: nil, heartRate: 62),                        // sedentary
+            ActivityMinuteSample(date: now.addingTimeInterval(60), steps: 10, heartRate: 70),  // too slow (<20 steps)
+            ActivityMinuteSample(date: now.addingTimeInterval(120), steps: 80, heartRate: 98), // walking
+            ActivityMinuteSample(date: now.addingTimeInterval(180), steps: 105, heartRate: 106), // walking
+            ActivityMinuteSample(date: now.addingTimeInterval(240), steps: 170, heartRate: 155), // running (>140 steps)
+        ]
+        #expect(HealthKitManager.walkingHeartRateAverage(samples) == 102)
+    }
+
+    @Test func mifflinStJeorDailyBasalKilocaloriesAndSwimmingStrokeMapping() {
+        let maleBmr = HealthKitManager.mifflinStJeorDailyKcal(
+            weightKg: 75, heightCm: 178, ageYears: 30, sex: .male
+        )
+        // 10*75 + 6.25*178 - 5*30 + 5 = 750 + 1112.5 - 150 + 5 = 1717.5
+        #expect(abs(maleBmr - 1717.5) < 0.01)
+
+        #expect(HealthKitManager.swimmingStrokeStyle("freestyle") == .freestyle)
+        #expect(HealthKitManager.swimmingStrokeStyle("breaststroke") == .breaststroke)
+        #expect(HealthKitManager.swimmingStrokeStyle("medley") == .mixed)
     }
 }

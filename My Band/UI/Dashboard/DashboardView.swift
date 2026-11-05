@@ -89,20 +89,31 @@ struct DashboardView: View {
     // MARK: Metrics
 
     private var metrics: some View {
-        HStack(spacing: MB.Space.x3) {
-            MBMetricTile(
-                icon: batteryIcon, tint: batteryTint, tintSoft: batteryTintSoft,
-                label: "Battery",
-                value: band.batteryLevel.map(String.init) ?? "—",
-                unit: band.batteryLevel != nil ? "%" : nil,
-                foot: band.batteryCharging ? "Charging" : nil
-            )
-            MBMetricTile(
-                icon: "heart.fill", tint: MB.hr, tintSoft: MB.hrSoft,
-                label: "Apple Health",
-                value: lastSyncText,
-                foot: "last sync"
-            )
+        VStack(spacing: MB.Space.x3) {
+            HStack(spacing: MB.Space.x3) {
+                MBMetricTile(
+                    icon: batteryIcon, tint: batteryTint, tintSoft: batteryTintSoft,
+                    label: "Battery",
+                    value: band.batteryLevel.map(String.init) ?? "—",
+                    unit: band.batteryLevel != nil ? "%" : nil,
+                    foot: band.batteryCharging ? "Charging" : nil
+                )
+                MBMetricTile(
+                    icon: "heart.fill", tint: MB.hr, tintSoft: MB.hrSoft,
+                    label: "Apple Health",
+                    value: lastSyncText,
+                    foot: "last sync"
+                )
+            }
+            if let walkingHR = syncer.todayWalkingHeartRateAvg {
+                MBMetricTile(
+                    icon: "figure.walk", tint: MB.hr, tintSoft: MB.hrSoft,
+                    label: "Walking HR",
+                    value: "\(walkingHR)",
+                    unit: "bpm",
+                    foot: "today average"
+                )
+            }
         }
     }
 

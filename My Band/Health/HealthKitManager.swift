@@ -42,7 +42,9 @@ final class HealthKitManager {
     private let stepCount   = HKQuantityType(.stepCount)
     private let distance    = HKQuantityType(.distanceWalkingRunning)
     private let activeEnergy = HKQuantityType(.activeEnergyBurned)
+    private let basalEnergy  = HKQuantityType(.basalEnergyBurned)
     private let spo2        = HKQuantityType(.oxygenSaturation)
+    private let respiratoryRate = HKQuantityType(.respiratoryRate)
     private let bodyTemp    = HKQuantityType(.bodyTemperature)
     private let restingHR   = HKQuantityType(.restingHeartRate)
     private let vo2Max      = HKQuantityType(.vo2Max)
@@ -55,23 +57,38 @@ final class HealthKitManager {
     private let physicalEffort   = HKQuantityType(.physicalEffort)
     private let runningSpeed     = HKQuantityType(.runningSpeed)
     private let runningStride    = HKQuantityType(.runningStrideLength)
+    private let runningGroundContactTime = HKQuantityType(.runningGroundContactTime)
+    private let runningVerticalOscillation = HKQuantityType(.runningVerticalOscillation)
+    private let walkingSpeed     = HKQuantityType(.walkingSpeed)
+    private let walkingStepLength = HKQuantityType(.walkingStepLength)
     private let cyclingSpeedType = HKQuantityType(.cyclingSpeed)
+    private let cyclingCadence   = HKQuantityType(.cyclingCadence)
+    private let flightsClimbed   = HKQuantityType(.flightsClimbed)
     private let hrRecovery       = HKQuantityType(.heartRateRecoveryOneMinute)
     private let workoutType      = HKObjectType.workoutType()
     private let routeType        = HKSeriesType.workoutRoute()
     private let hrvType          = HKQuantityType(.heartRateVariabilitySDNN)
     private let heartbeatType    = HKSeriesType.heartbeat()
 
+    /// Plausible sample date window: 2020-01-01 UTC through 24 h ahead of now. Rejects epoch-zero
+    /// (1969/1970) and corrupted header timestamps before they can reach Apple Health.
+    private static let minValidDate = Date(timeIntervalSince1970: 1_577_836_800)
+    static var validDateRange: ClosedRange<Date> {
+        minValidDate ... Date().addingTimeInterval(86_400)
+    }
+    private static let pre2020CleanupKey = "myband.pre2020CleanupDone.v1"
+
     /// MET: 1 kcal per kg per hour — the unit of physicalEffort and HKMetadataKeyAverageMETs.
     private static let metUnit = HKUnit.kilocalorie()
         .unitDivided(by: HKUnit.gramUnit(with: .kilo).unitMultiplied(by: .hour()))
 
     private var shareTypes: Set<HKSampleType> {
-        var types: Set<HKSampleType> = [sleepType, heartRate, stepCount, distance, activeEnergy, spo2,
-         bodyTemp, restingHR, vo2Max, distanceCycling, distanceSwimming, swimStrokes,
+        var types: Set<HKSampleType> = [sleepType, heartRate, stepCount, distance, activeEnergy, basalEnergy,
+         spo2, respiratoryRate, bodyTemp, restingHR, vo2Max, distanceCycling, distanceSwimming, swimStrokes,
          bodyMass, bodyMassIndex, height, workoutType, routeType,
-         physicalEffort, runningSpeed, runningStride, cyclingSpeedType, hrRecovery,
-         hrvType, heartbeatType]
+         physicalEffort, runningSpeed, runningStride, runningGroundContactTime, runningVerticalOscillation,
+         walkingSpeed, walkingStepLength, cyclingSpeedType, cyclingCadence, flightsClimbed,
+         hrRecovery, hrvType, heartbeatType]
         if #available(iOS 18.0, *) {
             types.insert(HKQuantityType(.estimatedWorkoutEffortScore))
             types.insert(HKQuantityType(.distanceRowing))
@@ -83,10 +100,12 @@ final class HealthKitManager {
 
     func requestAuthorization() async throws {
         guard isAvailable else { throw HealthError.unavailable }
-        // Date of birth is read-only (characteristic): age drives the max-HR estimate behind the
-        // workout effort score. Denial is fine — the score falls back to a fixed max HR.
+        // Date of birth and biological sex are read-only characteristics: age drives the max-HR
+        // estimate behind the workout effort score, and both feed the Mifflin-St Jeor resting
+        // energy (BMR) calculation. Denial is fine — both fall back to sensible defaults.
         var readTypes: Set<HKObjectType> = shareTypes
         readTypes.insert(HKCharacteristicType(.dateOfBirth))
+        readTypes.insert(HKCharacteristicType(.biologicalSex))
         try await store.requestAuthorization(toShare: shareTypes, read: readTypes)
     }
 
@@ -127,9 +146,10 @@ final class HealthKitManager {
     private func writeNights(_ nights: [[SleepSession]],
                              keepingRicherHealthNights: Bool) async throws -> (nights: Int, kept: Int, written: Int) {
         var result = (nights: 0, kept: 0, written: 0)
+        let validDates = Self.validDateRange
         for group in nights {
             guard let start = group.map(\.startDate).min(), let end = group.map(\.endDate).max(),
-                  end > start else { continue }
+                  end > start, validDates.contains(start), validDates.contains(end) else { continue }
             let phases = Self.mergedPhases(group)
 
             if keepingRicherHealthNights {
@@ -480,7 +500,8 @@ final class HealthKitManager {
         // iPhone. The daily summary keeps only band-exclusive readings (HR/SpO₂ extremes), which
         // the iPhone never produces and so never conflict.
         let bpm = HKUnit.count().unitDivided(by: .minute())
-        let validDateRange: ClosedRange<Date> = Date(timeIntervalSince1970: 1_600_000_000)...Date().addingTimeInterval(86400)
+        let validDateRange = Self.validDateRange
+        guard validDateRange.contains(dayStart) else { return 0 }
 
         if let resting = s.restingHR, (35...150).contains(resting) {
             samples.append(quantity(restingHR, bpm, Double(resting),
@@ -497,6 +518,27 @@ final class HealthKitManager {
         }
         if let mn = s.spo2Min, (50...100).contains(mn.pct), validDateRange.contains(mn.at) {
             samples.append(quantity(spo2, .percent(), Double(mn.pct) / 100.0, start: mn.at, end: mn.at, id: "mb-spo2min-\(Int(mn.at.timeIntervalSince1970))"))
+        }
+        // Daily Resting Energy (basalEnergyBurned) outside workouts: Mifflin-St Jeor BMR pro-rated
+        // across the elapsed non-workout portion of the day. Uses a monotonic sync version so
+        // later syncs of the same day replace the earlier partial-day sample in place.
+        if canShare(basalEnergy), dayEnd > dayStart {
+            let dailyBMR = await estimatedDailyBasalKilocalories()
+            let workouts = (try? await ownWorkouts(endingBetween: dayStart, and: dayEnd.addingTimeInterval(7200))) ?? []
+            let workoutWindows: [(start: Date, end: Date)] = workouts.compactMap { w in
+                let start = max(dayStart, w.startDate)
+                let end = min(dayEnd, w.endDate)
+                return end > start ? (start: start, end: end) : nil
+            }
+            let workoutSeconds = Self.coveredDuration(workoutWindows)
+            let nonWorkoutSeconds = max(0, dayEnd.timeIntervalSince(dayStart) - workoutSeconds)
+            if nonWorkoutSeconds >= 60 {
+                let basalKcal = dailyBMR * (nonWorkoutSeconds / 86_400.0)
+                let version = Int(Date().timeIntervalSince1970)
+                samples.append(quantity(basalEnergy, .kilocalorie(), basalKcal,
+                                        start: dayStart, end: dayEnd,
+                                        id: "mb-basal-day-\(dayKey)", version: version))
+            }
         }
         // NOTE: standingHours (DailySummary) is intentionally NOT written. HKCategoryType
         // .appleStandHour is reserved — HealthKit disallows third-party apps from sharing it
@@ -518,15 +560,26 @@ final class HealthKitManager {
 
     func writeMinuteSamples(_ minutes: [ActivityMinuteSample]) async throws -> Int {
         let bpm = HKUnit.count().unitDivided(by: .minute())
+        let validDates = Self.validDateRange
         var weightKg: Double?
         if canShare(physicalEffort), minutes.contains(where: { ($0.caloriesKcal ?? 0) > 0 }) {
             weightKg = (try? await latestBodyMassKg()) ?? nil
         }
         var samples: [HKSample] = []
         for m in minutes {
+            guard validDates.contains(m.date) else { continue }
             let key = Int(m.date.timeIntervalSince1970)
             if let hr = m.heartRate, (30...250).contains(hr) {
-                samples.append(quantity(heartRate, bpm, Double(hr), start: m.date, end: m.date, id: "mb-hr-\(key)"))
+                let isActive = (m.steps ?? 0) > 0
+                var hrMeta = syncMetadata("mb-hr-\(key)")
+                hrMeta[HKMetadataKeyHeartRateMotionContext] = (isActive ? HKHeartRateMotionContext.active : .sedentary).rawValue
+                hrMeta[HKMetadataKeyUserMotionContext] = (isActive ? HKUserMotionContext.active : .stationary).rawValue
+                samples.append(HKQuantitySample(
+                    type: heartRate,
+                    quantity: HKQuantity(unit: bpm, doubleValue: Double(hr)),
+                    start: m.date, end: m.date,
+                    metadata: hrMeta
+                ))
             }
             if let s = m.spo2, (50...100).contains(s) {
                 samples.append(quantity(spo2, .percent(), Double(s) / 100.0, start: m.date, end: m.date, id: "mb-spo2-\(key)"))
@@ -543,16 +596,34 @@ final class HealthKitManager {
         return try await save(samples)
     }
 
-    // MARK: - Heart rate variability (sleep beat-to-beat intervals)
+    /// Daily Walking Heart Rate Average (BPM) computed from per-minute samples where the user is
+    /// walking at a steady cadence (20...140 steps/min) with a plausible walking HR (40...190 bpm).
+    /// `HKQuantityType(.walkingHeartRateAverage)` itself is Apple-Watch-restricted in HealthKit and
+    /// throws NSInvalidArgumentException if shared by a third-party app, so we tag the underlying
+    /// `heartRate` samples with `HKHeartRateMotionContext` for HealthKit and compute this average
+    /// for ActivityDay / DashboardView.
+    static func walkingHeartRateAverage(_ minutes: [ActivityMinuteSample]) -> Int? {
+        let hrs = minutes.compactMap { m -> Int? in
+            guard let steps = m.steps, (20...140).contains(steps),
+                  let hr = m.heartRate, (40...190).contains(hr) else { return nil }
+            return hr
+        }
+        guard !hrs.isEmpty else { return nil }
+        let sum = hrs.reduce(0, +)
+        return Int((Double(sum) / Double(hrs.count)).rounded())
+    }
+
+    // MARK: - Heart rate variability & overnight respiratory rate (sleep beat-to-beat intervals)
     //
     // Per block of the band's beat-to-beat intervals (see HeartRateVariability): one heartbeat series
-    // with every beat, and one SDNN value per clean minute. Both types are optional enrichment, so a
-    // denied one is skipped (canShare) instead of failing the batch.
+    // with every beat, one SDNN value per clean minute, and one overnight respiratoryRate value derived
+    // from Respiratory Sinus Arrhythmia (RSA). All three types are optional enrichment, so a denied one
+    // is skipped (canShare) instead of failing the batch.
     //
-    // Re-syncs: each report of a night repeats the blocks of the ones before it. SDNN values carry a
-    // sync identifier per minute and are replaced in place. A heartbeat series is built, not saved
-    // whole, so the sync-identifier replacement isn't something to lean on — identifiers already in
-    // Health are looked up and their blocks skipped.
+    // Re-syncs: each report of a night repeats the blocks of the ones before it. SDNN and respiratory
+    // rate values carry a sync identifier and are replaced in place. A heartbeat series is built, not
+    // saved whole, so the sync-identifier replacement isn't something to lean on — identifiers already
+    // in Health are looked up and their blocks skipped.
 
     /// Bump when HeartRateVariability changes how a minute's value is computed: a higher version
     /// replaces the SDNN values already in Health on the next write of their nights.
@@ -560,6 +631,7 @@ final class HealthKitManager {
 
     struct HRVWriteResult {
         var minuteValues = 0
+        var respiratoryValues = 0
         var seriesWritten = 0
         var seriesAlreadyThere = 0
         var medianSDNN: Double?
@@ -567,7 +639,8 @@ final class HealthKitManager {
 
     func writeHeartRateVariability(_ blocks: [BeatWindow]) async throws -> HRVWriteResult {
         var result = HRVWriteResult()
-        let blocks = HeartRateVariability.distinct(blocks)
+        let validDates = Self.validDateRange
+        let blocks = HeartRateVariability.distinct(blocks).filter { validDates.contains($0.start) }
         guard !blocks.isEmpty else { return result }
 
         if canShare(hrvType) {
@@ -580,6 +653,16 @@ final class HealthKitManager {
             result.minuteValues = try await save(samples)
             let sorted = minutes.map(\.sdnnMs).sorted()
             if !sorted.isEmpty { result.medianSDNN = sorted[sorted.count / 2] }
+        }
+
+        if canShare(respiratoryRate) {
+            let respSamples = blocks.compactMap(HeartRateVariability.respiratoryRate)
+            let brpm = HKUnit.count().unitDivided(by: .minute())
+            let hkResp = respSamples.map {
+                quantity(respiratoryRate, brpm, $0.breathsPerMinute, start: $0.start, end: $0.end,
+                         id: "mb-resp-\(Int($0.start.timeIntervalSince1970))", version: hrvVersion)
+            }
+            result.respiratoryValues = try await save(hkResp)
         }
 
         if canShare(heartbeatType) {
@@ -655,7 +738,8 @@ final class HealthKitManager {
         // Skip minutes the iPhone may not have finalised yet (see the type header). Skipped recent
         // minutes are reconciled on a later sync — the band keeps re-offering today's growing file.
         let cutoff = Date().addingTimeInterval(-reconcileSettleWindow)
-        func settled(_ d: Date) -> Bool { d < cutoff }
+        let validDates = Self.validDateRange
+        func settled(_ d: Date) -> Bool { d < cutoff && validDates.contains(d) }
 
         let steps = minutes.filter { settled($0.date) }.compactMap { m in m.steps.map { (m.date, Double($0)) } }
         let dist  = minutes.filter { settled($0.date) && !inWorkout($0.date) }.compactMap { m in m.distanceMeters.map { (m.date, $0) } }
@@ -738,8 +822,10 @@ final class HealthKitManager {
 
     func writeManualSamples(_ manual: [ManualSample]) async throws -> Int {
         let bpm = HKUnit.count().unitDivided(by: .minute())
+        let validDates = Self.validDateRange
         var samples: [HKSample] = []
         for m in manual {
+            guard validDates.contains(m.date) else { continue }
             let key = Int(m.date.timeIntervalSince1970)
             switch m.kind {
             case .heartRate where (30...250).contains(m.value):
@@ -797,6 +883,10 @@ final class HealthKitManager {
                 samples.append(quantity(activeEnergy, .kilocalorie(), kcal,
                                         start: w.startDate, end: w.endDate, id: "mb-wkcal-\(key)"))
             }
+            if let basal = w.basalCaloriesKcal, canShare(basalEnergy) {
+                samples.append(quantity(basalEnergy, .kilocalorie(), basal,
+                                        start: w.startDate, end: w.endDate, id: "mb-wbasal-\(key)"))
+            }
             if let dist = w.distanceMeters {
                 var distType = Self.distanceType(w.kind, distance, distanceCycling, distanceSwimming)
                 // Rowing got its own quantity on iOS 18; before that it fell into the default
@@ -813,25 +903,79 @@ final class HealthKitManager {
                                         start: w.startDate, end: w.endDate, id: "mb-wstrokes-\(key)"))
             }
             // In-workout speed series from the GPS track (V2 points carry m/s), so Apple Health
-            // draws the speed/pace graph. Running kinds → runningSpeed, cycling → cyclingSpeed.
-            // Walking/hiking are deliberately excluded: walkingSpeed feeds the iPhone's Mobility
-            // metrics, which stay iPhone-authoritative (see writeReconciledActivity's rationale).
-            if let track, let speedType = Self.speedType(w.kind), canShare(speedType) {
+            // draws the speed/pace graph, falling back to average workout speed when no GPS track is
+            // present. Running kinds → runningSpeed, walking/hiking → walkingSpeed, cycling → cyclingSpeed.
+            if let speedType = Self.speedType(w.kind), canShare(speedType) {
                 let mps = HKUnit.meter().unitDivided(by: .second())
-                for p in track where w.startDate ... w.endDate ~= p.date {
-                    guard let v = p.speed, v > 0, v < 30 else { continue }
-                    samples.append(quantity(speedType, mps, v, start: p.date, end: p.date,
-                                            id: "mb-wspd-\(key)-\(Int(p.date.timeIntervalSince1970))"))
+                var addedTrackSpeed = false
+                if let track {
+                    for p in track where w.startDate ... w.endDate ~= p.date {
+                        guard let v = p.speed, v > 0, v < 30 else { continue }
+                        samples.append(quantity(speedType, mps, v, start: p.date, end: p.date,
+                                                id: "mb-wspd-\(key)-\(Int(p.date.timeIntervalSince1970))"))
+                        addedTrackSpeed = true
+                    }
+                }
+                if !addedTrackSpeed, let avgKmh = w.speedAvgKmh {
+                    let avgMps = avgKmh / 3.6
+                    if (0.1 ..< 30.0).contains(avgMps) {
+                        samples.append(quantity(speedType, mps, avgMps, start: w.startDate, end: w.endDate,
+                                                id: "mb-wspd-avg-\(key)"))
+                    }
                 }
             }
-            // Average stride length for runs — the band only has workout totals (distance/steps),
-            // so it's one sample spanning the workout, not a per-step series.
-            if Self.activityType(w.kind) == .running, canShare(runningStride),
-               let dist = w.distanceMeters, let steps = w.steps, steps > 0 {
-                let stride = dist / steps
-                if (0.3...3.0).contains(stride) {
-                    samples.append(quantity(runningStride, .meter(), stride,
-                                            start: w.startDate, end: w.endDate, id: "mb-wstride-\(key)"))
+            let actType = Self.activityType(w.kind)
+            // Average stride length and running dynamics (ground contact time, vertical oscillation)
+            // for runs. Prefer the band's directly measured stepLengthAvg (cm) when present, falling
+            // back to distance / steps.
+            if actType == .running {
+                if canShare(runningStride) {
+                    let measuredStride = w.stepLengthAvgCm.map { $0 / 100.0 }
+                    let fallbackStride: Double? = {
+                        guard let dist = w.distanceMeters, let steps = w.steps, steps > 0 else { return nil }
+                        return dist / steps
+                    }()
+                    if let stride = measuredStride ?? fallbackStride, (0.3...3.0).contains(stride) {
+                        samples.append(quantity(runningStride, .meter(), stride,
+                                                start: w.startDate, end: w.endDate, id: "mb-wstride-\(key)"))
+                    }
+                }
+                if canShare(runningGroundContactTime),
+                   let gctMs = w.avgGroundContactTimeMs, (50...1000).contains(gctMs) {
+                    samples.append(quantity(runningGroundContactTime, .secondUnit(with: .milli), gctMs,
+                                            start: w.startDate, end: w.endDate, id: "mb-wgct-\(key)"))
+                }
+                if canShare(runningVerticalOscillation),
+                   let voCm = w.avgVerticalOscillationCm, (1...30).contains(voCm) {
+                    samples.append(quantity(runningVerticalOscillation, .meterUnit(with: .centi), voCm,
+                                            start: w.startDate, end: w.endDate, id: "mb-wvo-\(key)"))
+                }
+            }
+            // Average walking step length for walking and hiking workouts.
+            if (actType == .walking || actType == .hiking), canShare(walkingStepLength) {
+                let measuredStride = w.stepLengthAvgCm.map { $0 / 100.0 }
+                let fallbackStride: Double? = {
+                    guard let dist = w.distanceMeters, let steps = w.steps, steps > 0 else { return nil }
+                    return dist / steps
+                }()
+                if let stride = measuredStride ?? fallbackStride, (0.2...2.5).contains(stride) {
+                    samples.append(quantity(walkingStepLength, .meter(), stride,
+                                            start: w.startDate, end: w.endDate, id: "mb-wwalkstride-\(key)"))
+                }
+            }
+            // Average cycling cadence (RPM) for outdoor and indoor cycling workouts.
+            if actType == .cycling, canShare(cyclingCadence),
+               let rpm = w.cadenceAvgRpm, (10...250).contains(rpm) {
+                samples.append(quantity(cyclingCadence, bpm, rpm,
+                                        start: w.startDate, end: w.endDate, id: "mb-wcadence-\(key)"))
+            }
+            // Flights climbed derived from vertical ascent (Apple Health standard: 1 flight = 3.0 m).
+            if (actType == .walking || actType == .hiking || actType == .running),
+               canShare(flightsClimbed), let gain = w.elevationGainMeters, gain >= 3.0 {
+                let flights = floor(gain / 3.0)
+                if flights >= 1 {
+                    samples.append(quantity(flightsClimbed, .count(), flights,
+                                            start: w.startDate, end: w.endDate, id: "mb-wflights-\(key)"))
                 }
             }
             // Per-second HR series recorded during the workout, attached to this HKWorkout so Apple
@@ -840,8 +984,15 @@ final class HealthKitManager {
             if let hr = Self.heartRateSeries(forWorkoutStart: w.startDate, in: heartRates) {
                 var attached = 0
                 for s in hr where w.startDate ... w.endDate ~= s.date {
-                    samples.append(quantity(heartRate, bpm, Double(s.bpm), start: s.date, end: s.date,
-                                            id: "mb-whr-\(key)-\(Int(s.date.timeIntervalSince1970))"))
+                    var hrMeta = syncMetadata("mb-whr-\(key)-\(Int(s.date.timeIntervalSince1970))")
+                    hrMeta[HKMetadataKeyHeartRateMotionContext] = HKHeartRateMotionContext.active.rawValue
+                    hrMeta[HKMetadataKeyUserMotionContext] = HKUserMotionContext.active.rawValue
+                    samples.append(HKQuantitySample(
+                        type: heartRate,
+                        quantity: HKQuantity(unit: bpm, doubleValue: Double(s.bpm)),
+                        start: s.date, end: s.date,
+                        metadata: hrMeta
+                    ))
                     attached += 1
                 }
                 log.info("Workout \(key): attaching \(attached) in-workout HR sample(s) to HKWorkout")
@@ -858,11 +1009,40 @@ final class HealthKitManager {
                 HKMetadataKeySyncIdentifier: "mb-workout-\(key)",
                 HKMetadataKeySyncVersion: syncVersion,
                 HKMetadataKeyIndoorWorkout: Self.swimmingLocation(w.kind) == nil && Self.isIndoor(w.kind),
+                "MiBandWorkoutRealEnd": w.endDate.timeIntervalSince1970,
             ]
             if let avg = w.hrAvg { metadata["MiBandAverageHeartRate"] = avg }
             if let mx = w.hrMax  { metadata["MiBandMaxHeartRate"] = mx }
             if let mn = w.hrMin  { metadata["MiBandMinHeartRate"] = mn }
-            if let style = w.swimStyle { metadata["MiBandSwimStyle"] = style }
+            if let style = w.swimStyle {
+                metadata["MiBandSwimStyle"] = style
+                if actType == .swimming {
+                    metadata[HKMetadataKeySwimmingStrokeStyle] = Self.swimmingStrokeStyle(style).rawValue
+                }
+            }
+            if actType == .swimming, let laneMeters = w.configuredLaneLengthMeters, laneMeters > 0 {
+                metadata[HKMetadataKeyLapLength] = HKQuantity(unit: .meter(), doubleValue: laneMeters)
+            }
+            if let gain = w.elevationGainMeters {
+                metadata[HKMetadataKeyElevationAscended] = HKQuantity(unit: .meter(), doubleValue: gain)
+            }
+            if let loss = w.elevationLossMeters {
+                metadata[HKMetadataKeyElevationDescended] = HKQuantity(unit: .meter(), doubleValue: loss)
+            }
+            if let avgKmh = w.speedAvgKmh {
+                let mps = HKUnit.meter().unitDivided(by: .second())
+                metadata[HKMetadataKeyAverageSpeed] = HKQuantity(unit: mps, doubleValue: avgKmh / 3.6)
+            }
+            if let maxKmh = w.speedMaxKmh {
+                let mps = HKUnit.meter().unitDivided(by: .second())
+                metadata[HKMetadataKeyMaximumSpeed] = HKQuantity(unit: mps, doubleValue: maxKmh / 3.6)
+            }
+            if let swolf = w.swolfAvg { metadata[HKMetadataKeySWOLFScore] = swolf }
+            if let laps = w.laps { metadata["MiBandLaps"] = laps }
+            if let te = w.trainingEffectAerobic { metadata["MiBandTrainingEffectAerobic"] = te }
+            if let te = w.trainingEffectAnaerobic { metadata["MiBandTrainingEffectAnaerobic"] = te }
+            if let load = w.workoutLoad { metadata["MiBandWorkoutLoad"] = load }
+            if let rec = w.recoveryTimeHours { metadata["MiBandRecoveryTimeHours"] = rec }
             // Weather at the workout's location/time (Open-Meteo). Apple Health shows condition,
             // temperature and humidity in the workout detail. Humidity is a fraction (0–1) in the
             // percent unit; condition is the HKWeatherCondition raw value.
@@ -1079,14 +1259,25 @@ final class HealthKitManager {
         }
     }
 
-    /// Quantity type for the in-workout GPS speed series. Only kinds whose speed has a dedicated
-    /// HealthKit type; walking/hiking return nil on purpose — walkingSpeed would feed the iPhone's
-    /// Mobility metrics, which stay iPhone-authoritative.
+    /// Quantity type for the in-workout GPS/summary speed series.
     private static func speedType(_ kind: WorkoutKind) -> HKQuantityType? {
         switch kind {
-        case .running, .trailRun: HKQuantityType(.runningSpeed)
-        case .outdoorCycling:     HKQuantityType(.cyclingSpeed)
-        default:                  nil
+        case .running, .trailRun, .treadmill:     HKQuantityType(.runningSpeed)
+        case .walking, .hiking, .trekking:        HKQuantityType(.walkingSpeed)
+        case .outdoorCycling, .indoorCycling:     HKQuantityType(.cyclingSpeed)
+        default:                                  nil
+        }
+    }
+
+    static func swimmingStrokeStyle(_ name: String) -> HKSwimmingStrokeStyle {
+        switch name.lowercased() {
+        case "medley", "mixed": return .mixed
+        case "breaststroke":    return .breaststroke
+        case "freestyle":       return .freestyle
+        case "backstroke":      return .backstroke
+        case "butterfly":       return .butterfly
+        case "kickboard":       return .kickboard
+        default:                return .unknown
         }
     }
 
@@ -1106,30 +1297,102 @@ final class HealthKitManager {
             .compactMap { m in m.heartRate.map { (date: m.date, bpm: $0) } }
             .filter { (30...250).contains($0.bpm) }
             .sorted { $0.date < $1.date }
-        guard let first = hrMinutes.first?.date, let last = hrMinutes.last?.date else { return 0 }
 
-        // Our workouts whose end+60 s reading could be inside this batch's span.
-        let workouts = try await ownWorkouts(endingBetween: first.addingTimeInterval(-90),
-                                             and: last.addingTimeInterval(-30))
+        let now = Date()
+        let windowStart = hrMinutes.first?.date.addingTimeInterval(-300) ?? now.addingTimeInterval(-7 * 86_400)
+        let windowEnd = max(hrMinutes.last?.date ?? now, now)
+        let workouts = try await ownWorkouts(endingBetween: windowStart, and: windowEnd)
+        guard !workouts.isEmpty else { return 0 }
+
         let bpm = HKUnit.count().unitDivided(by: .minute())
         var samples: [HKSample] = []
-        for workout in workouts where workout.duration >= 120 {
-            let target = workout.endDate.addingTimeInterval(60)
-            // Per-minute grid means the reading rarely lands exactly on end+60; ±30 s tolerance.
-            guard let recovery = hrMinutes
-                .filter({ abs($0.date.timeIntervalSince(target)) <= 30 })
-                .min(by: { abs($0.date.timeIntervalSince(target)) < abs($1.date.timeIntervalSince(target)) })
+        for workout in workouts where workout.duration >= 60 {
+            let realEnd: Date
+            if let realEndEpoch = workout.metadata?["MiBandWorkoutRealEnd"] as? TimeInterval, realEndEpoch > 0 {
+                realEnd = Date(timeIntervalSince1970: realEndEpoch)
+            } else {
+                realEnd = workout.endDate
+            }
+            let target = realEnd.addingTimeInterval(60)
+            // Look in the incoming per-minute batch first; if absent (e.g. post-strength recovery HR
+            // written directly to HealthKit, or workout synced in a separate batch), fall back to
+            // querying this app's HR samples in [realEnd + 15, realEnd + 120].
+            var candidates = hrMinutes.filter { $0.date >= realEnd.addingTimeInterval(15) && $0.date <= realEnd.addingTimeInterval(120) }
+            if candidates.isEmpty,
+               let stored = try? await ownHeartRateSamples(from: realEnd.addingTimeInterval(15), to: realEnd.addingTimeInterval(120)) {
+                candidates = stored
+            }
+            guard let recovery = candidates.min(by: { abs($0.date.timeIntervalSince(target)) < abs($1.date.timeIntervalSince(target)) })
             else { continue }
-            // try? — a window with no samples (workout without a 1 Hz series) reports errorNoData;
-            // that just means "no recovery for this one", not a batch failure.
+            // try? — a window with no samples reports errorNoData; that just means "no recovery for
+            // this one", not a batch failure.
             guard let peak = try? await ownHeartRatePeak(
-                from: workout.endDate.addingTimeInterval(-60), to: workout.endDate) else { continue }
+                from: realEnd.addingTimeInterval(-120), to: realEnd) else { continue }
             let drop = peak - Double(recovery.bpm)
             guard (1...120).contains(drop) else { continue }   // HR must actually have dropped
             let key = Int(workout.startDate.timeIntervalSince1970)
-            samples.append(quantity(hrRecovery, bpm, drop, start: target, end: target, id: "mb-hrr-\(key)"))
+            var meta = syncMetadata("mb-hrr-\(key)")
+            meta[HKMetadataKeyHeartRateRecoveryTestType] = HKHeartRateRecoveryTestType.maxExercise.rawValue
+            meta[HKMetadataKeyHeartRateRecoveryActivityType] = workout.workoutActivityType.rawValue
+            meta[HKMetadataKeyHeartRateRecoveryActivityDuration] = HKQuantity(
+                unit: .second(),
+                doubleValue: max(60, realEnd.timeIntervalSince(workout.startDate))
+            )
+            meta[HKMetadataKeyHeartRateRecoveryMaxObservedRecoveryHeartRate] = HKQuantity(
+                unit: bpm,
+                doubleValue: peak
+            )
+            samples.append(HKQuantitySample(
+                type: hrRecovery,
+                quantity: HKQuantity(unit: bpm, doubleValue: drop),
+                start: target, end: target,
+                metadata: meta
+            ))
         }
         return try await save(samples)
+    }
+
+    /// One-time cleanup of pre-2020 corrupted records (1928, 1969, 1970) written by early builds
+    /// before file-ID mismatch and timestamp bounds were enforced.
+    func cleanupPre2020CorruptedSamplesIfNeeded() async {
+        guard isAvailable, !UserDefaults.standard.bool(forKey: Self.pre2020CleanupKey) else { return }
+        let mine = HKQuery.predicateForObjects(from: [HKSource.default()])
+        let before2020 = HKQuery.predicateForSamples(withStart: .distantPast, end: Self.minValidDate, options: .strictStartDate)
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [mine, before2020])
+        let typesToClean: [HKSampleType] = [
+            heartRate, restingHR, spo2, activeEnergy, basalEnergy, respiratoryRate, stepCount, distance, physicalEffort, sleepType
+        ]
+        var totalDeleted = 0
+        for sampleType in typesToClean where canShare(sampleType) {
+            do {
+                let descriptor = HKSampleQueryDescriptor(predicates: [.sample(type: sampleType, predicate: predicate)], sortDescriptors: [])
+                let found = try await descriptor.result(for: store)
+                if !found.isEmpty {
+                    try await store.delete(found)
+                    totalDeleted += found.count
+                }
+            } catch {
+                log.error("Pre-2020 cleanup failed for \(sampleType.identifier): \(error.localizedDescription)")
+                return
+            }
+        }
+        UserDefaults.standard.set(true, forKey: Self.pre2020CleanupKey)
+        if totalDeleted > 0 {
+            log.info("Pre-2020 cleanup removed \(totalDeleted) corrupted historical sample(s)")
+        }
+    }
+
+    private func ownHeartRateSamples(from start: Date, to end: Date) async throws -> [(date: Date, bpm: Int)] {
+        let mine = HKQuery.predicateForObjects(from: [HKSource.default()])
+        let time = HKQuery.predicateForSamples(withStart: start, end: end, options: [])
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [mine, time])
+        let descriptor = HKSampleQueryDescriptor(
+            predicates: [.quantitySample(type: heartRate, predicate: predicate)],
+            sortDescriptors: []
+        )
+        let bpmUnit = HKUnit.count().unitDivided(by: .minute())
+        let found = try await descriptor.result(for: store)
+        return found.map { (date: $0.startDate, bpm: Int($0.quantity.doubleValue(for: bpmUnit).rounded())) }
     }
 
     /// Workouts written by this app whose endDate falls in [start, end].
@@ -1226,6 +1489,35 @@ final class HealthKitManager {
         let age = Date().timeIntervalSince(birth) / 31_557_600
         guard (5...120).contains(age) else { return 190 }
         return 208 - 0.7 * age
+    }
+
+    /// Daily Basal Metabolic Rate (kcal/day) via Mifflin-St Jeor from the user's latest HealthKit
+    /// weight, height, age, and biological sex, falling back to adult defaults when unavailable.
+    private func estimatedDailyBasalKilocalories() async -> Double {
+        let weightKg = ((try? await latestBodyMassKg()) ?? nil) ?? 70.0
+        let heightMeters = ((try? await latestHeightMeters()) ?? nil) ?? 1.70
+        let ageYears: Double = {
+            guard let dob = try? store.dateOfBirthComponents(),
+                  let birth = Calendar.current.date(from: dob) else { return 35.0 }
+            let a = Date().timeIntervalSince(birth) / 31_557_600
+            return (5...120).contains(a) ? a : 35.0
+        }()
+        let sex = (try? store.biologicalSex().biologicalSex) ?? .notSet
+        return Self.mifflinStJeorDailyKcal(weightKg: weightKg, heightCm: heightMeters * 100.0,
+                                           ageYears: ageYears, sex: sex)
+    }
+
+    static func mifflinStJeorDailyKcal(weightKg: Double, heightCm: Double,
+                                       ageYears: Double, sex: HKBiologicalSex) -> Double {
+        let sexOffset: Double
+        switch sex {
+        case .male:   sexOffset = 5.0
+        case .female: sexOffset = -161.0
+        case .other, .notSet: sexOffset = -78.0
+        @unknown default: sexOffset = -78.0
+        }
+        let bmr = 10.0 * weightKg + 6.25 * heightCm - 5.0 * ageYears + sexOffset
+        return min(4000.0, max(800.0, bmr))
     }
 
     private func quantity(_ type: HKQuantityType, _ unit: HKUnit, _ value: Double,

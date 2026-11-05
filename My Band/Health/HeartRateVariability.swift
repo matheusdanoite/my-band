@@ -112,6 +112,75 @@ enum HeartRateVariability {
         return (squares / Double(values.count - 1)).squareRoot()
     }
 
+    struct RespiratoryRateValue: Equatable {
+        var start: Date
+        var end: Date
+        var breathsPerMinute: Double
+        var cycles: Int
+    }
+
+    /// Overnight respiratory rate derived from Respiratory Sinus Arrhythmia (RSA) modulation of
+    /// the beat-to-beat interval series across a ~10-minute sleep `BeatWindow`.
+    ///
+    /// Inhalation shortens RR intervals and exhalation lengthens them in the physiological sleep
+    /// breathing band (10–24 breaths/min, period 2.5–6.0 s). Detrending with a 9-beat moving
+    /// average removes VLF/LF drift (< 0.12 Hz) and a 3-beat smooth suppresses 40 ms PPG quantization
+    /// steps; upward zero-crossings within 2.5–6.0 s yield the block's breathing period.
+    static func respiratoryRate(_ window: BeatWindow) -> RespiratoryRateValue? {
+        let clean = accepted(window.intervalsMs)
+        var pts: [(t: TimeInterval, rr: Double)] = []
+        pts.reserveCapacity(window.intervalsMs.count)
+        var elapsedMs = 0
+        for (i, interval) in window.intervalsMs.enumerated() {
+            if interval > 0 { elapsedMs += interval }
+            if clean[i] {
+                pts.append((TimeInterval(elapsedMs) / 1000.0, Double(interval)))
+            }
+        }
+        guard pts.count >= 120, elapsedMs > 0 else { return nil }
+
+        var detrended: [(t: TimeInterval, y: Double)] = []
+        detrended.reserveCapacity(pts.count - 8)
+        for i in 4 ..< (pts.count - 4) {
+            var sum9 = 0.0
+            for j in (i - 4) ... (i + 4) { sum9 += pts[j].rr }
+            let avg9 = sum9 / 9.0
+            let s3 = (pts[i - 1].rr + pts[i].rr + pts[i + 1].rr) / 3.0
+            detrended.append((pts[i].t, s3 - avg9))
+        }
+        guard detrended.count >= 2 else { return nil }
+
+        var crossings: [TimeInterval] = []
+        for i in 1 ..< detrended.count {
+            let (t0, y0) = detrended[i - 1]
+            let (t1, y1) = detrended[i]
+            if y0 <= 0 && y1 > 0 {
+                let tc = y1 != y0 ? t0 + (0.0 - y0) * (t1 - t0) / (y1 - y0) : t1
+                crossings.append(tc)
+            }
+        }
+        guard crossings.count >= 2 else { return nil }
+
+        var validPeriods: [TimeInterval] = []
+        for i in 1 ..< crossings.count {
+            let period = crossings[i] - crossings[i - 1]
+            if (2.5 ... 6.0).contains(period) {
+                validPeriods.append(period)
+            }
+        }
+        guard validPeriods.count >= 15 else { return nil }
+
+        let meanPeriod = validPeriods.reduce(0.0, +) / Double(validPeriods.count)
+        let bpm = (60.0 / meanPeriod * 10.0).rounded() / 10.0
+        guard (10.0 ... 24.0).contains(bpm) else { return nil }
+        return RespiratoryRateValue(
+            start: window.start,
+            end: window.start.addingTimeInterval(TimeInterval(elapsedMs) / 1000.0),
+            breathsPerMinute: bpm,
+            cycles: validPeriods.count
+        )
+    }
+
     /// One window per start, the last one seen winning: every report of a night repeats the blocks
     /// of the reports before it.
     static func distinct(_ windows: [BeatWindow]) -> [BeatWindow] {

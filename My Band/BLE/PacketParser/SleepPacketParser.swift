@@ -117,7 +117,7 @@ enum SleepDetailsParser {
             r.skip(9)
             _ = r.i32()                        // bedTime2
             _ = r.i32()                        // wakeupTime2
-            headerIdx += 5
+            headerIdx += 4                     // bits 4..7 (byte 0); bit 8 in header[1] is HR, bit 9 is SpO₂, bit 10 is Snore
         }
 
         // Heart-rate samples recorded during sleep — the data Apple Health's sleep
@@ -160,8 +160,8 @@ enum SleepDetailsParser {
         // scoring on 13% of its minutes). Only the last pair per start is the band's verdict; each
         // summary matched the stages right after it to the minute.
         var revisions: [Int64: [SleepPhase]] = [:]
-        var summaryMinutes: (deep: Int, light: Int, rem: Int, wake: Int)?
-        var lastStagesSummary: (deep: Int, light: Int, rem: Int, wake: Int)?
+        var summaryMinutes: (sleep: Int, deep: Int, light: Int, rem: Int, wake: Int)?
+        var lastStagesSummary: (sleep: Int, deep: Int, light: Int, rem: Int, wake: Int)?
         var lastStagesTs: Int64?
         var beatBlocks: [Int64: BeatWindow] = [:]
         // Stage packets carry their own timestamps; one far outside the night is a misread, and
@@ -180,7 +180,7 @@ enum SleepDetailsParser {
             result.packetTypes.append(type)
 
             // Flag-only packets: the dataLen bytes are flags, no payload follows.
-            if [0x2, 0x3, 0x9, 0xC, 0xD, 0xE, 0xF].contains(type) { continue }
+            if [0x2, 0x3, 0x9, 0xC, 0xD, 0xE, 0xF, 0x12].contains(type) { continue }
             guard dataLen >= 0, r.remaining >= dataLen else { break }
             let payload = r.read(dataLen)
 
@@ -214,10 +214,21 @@ enum SleepDetailsParser {
         result.beatWindows = beatBlocks.keys.sorted().compactMap { beatBlocks[$0] }
 
         let sanitized = sanitizeStages(stages.filter { plausible.contains($0.startDate) && plausible.contains($0.endDate) })
-        let phases = sanitized.isEmpty
-            ? summaryMinutes.map { buildPhasesFromSummary(start: sessionStart, deepMin: $0.deep, lightMin: $0.light,
-                                                         remMin: $0.rem, wakeMin: $0.wake) } ?? []
-            : sanitized
+        let phases: [SleepPhase]
+        if !sanitized.isEmpty {
+            phases = sanitized
+        } else if let summary = summaryMinutes {
+            let stagedMinutes = summary.deep + summary.light + summary.rem + summary.wake
+            // Short sleeps / naps (< 3h) finalized by the band (awakeFlag != 0) carry total sleep
+            // duration in bytes [1..2] of type-16 with zero stage breakdown and an empty type-17.
+            // While awakeFlag == 0, keep phases empty so BandSyncer holds the ACK until the band
+            // either scores stages (≥ 3h) or finalizes the short sleep (awakeFlag != 0).
+            let fallbackLight = stagedMinutes > 0 ? summary.light : (result.awakeFlag != 0 ? summary.sleep : 0)
+            phases = buildPhasesFromSummary(start: sessionStart, deepMin: summary.deep, lightMin: fallbackLight,
+                                            remMin: summary.rem, wakeMin: summary.wake)
+        } else {
+            phases = []
+        }
         guard let first = phases.first, let last = phases.last else { return result }
 
         // Widened to enclose every phase, as in SleepStagesParser: the window becomes the in-bed sample
@@ -316,9 +327,10 @@ enum SleepDetailsParser {
     //   [7..8]:    rem_duration
     //   [9..10]:   deep_duration
 
-    private static func parseSleepSummary(_ data: Data) -> (deep: Int, light: Int, rem: Int, wake: Int)? {
+    private static func parseSleepSummary(_ data: Data) -> (sleep: Int, deep: Int, light: Int, rem: Int, wake: Int)? {
         guard data.count >= 11 else { return nil }
         return (
+            sleep: Int(data.readUInt16BE(at: 1)),
             deep:  Int(data.readUInt16BE(at: 9)),
             light: Int(data.readUInt16BE(at: 5)),
             rem:   Int(data.readUInt16BE(at: 7)),

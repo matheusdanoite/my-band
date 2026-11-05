@@ -328,42 +328,47 @@ Ports `PasswordXiaomiCloudConnector` from `token_extractor/token_extractor.py` �
 
 | Mi Band data | HealthKit type |
 |---|---|
-| Sleep (start/end/phases) | `HKCategoryTypeIdentifier.sleepAnalysis` |
+| Sleep (start/end/phases, including `< 3 h` short-sleep summary fallback) | `HKCategoryTypeIdentifier.sleepAnalysis` |
 | Steps | `HKQuantityTypeIdentifier.stepCount` |
-| Heart rate | `HKQuantityTypeIdentifier.heartRate` |
-| SpO2 | `HKQuantityTypeIdentifier.oxygenSaturation` |
+| Heart rate (with `HKMetadataKeyHeartRateMotionContext` & `HKMetadataKeyUserMotionContext`) | `HKQuantityTypeIdentifier.heartRate` |
+| SpO₂ (daily, manual & overnight v5) | `HKQuantityTypeIdentifier.oxygenSaturation` |
+| Overnight respiratory rate (RSA from sleep RR intervals) | `HKQuantityTypeIdentifier.respiratoryRate` |
 | Active calories | `HKQuantityTypeIdentifier.activeEnergyBurned` |
+| Resting / basal calories (Mifflin-St Jeor daily BMR outside workouts + workout `caloriesTotal − calories`) | `HKQuantityTypeIdentifier.basalEnergyBurned` |
 | Walking distance | `HKQuantityTypeIdentifier.distanceWalkingRunning` |
+| Flights climbed (`floor(elevationGain / 3.0)` on walking/hiking/running workouts) | `HKQuantityTypeIdentifier.flightsClimbed` |
 | Resting HR | `HKQuantityTypeIdentifier.restingHeartRate` |
 | Body temperature (manual measurement) | `HKQuantityTypeIdentifier.bodyTemperature` |
 | VO₂ max (workout) | `HKQuantityTypeIdentifier.vo2Max` |
 | Cycling / swimming distance (workout) | `HKQuantityTypeIdentifier.distanceCycling` / `.distanceSwimming` |
-| Strokes (swimming) | `HKQuantityTypeIdentifier.swimmingStrokeCount` |
+| Strokes (swimming, with `HKMetadataKeySwimmingStrokeStyle`, `HKMetadataKeyLapLength`, `HKMetadataKeySWOLFScore`) | `HKQuantityTypeIdentifier.swimmingStrokeCount` |
 | Workout | `HKObjectType.workoutType()` via `HKWorkoutBuilder` (mapped to `HKWorkoutActivityType`) |
-| Workout route (GPS) | `HKSeriesType.workoutRoute()` via `HKWorkoutRouteBuilder` |
+| Workout route (GPS + sparse strength-training location anchor) | `HKSeriesType.workoutRoute()` via `HKWorkoutRouteBuilder` |
 | Weight (BLE scale) | `HKQuantityTypeIdentifier.bodyMass` (+ `.bodyMassIndex` derived from `.height` read from Health) |
 | Physical effort (METs/min: the band's active kcal ÷ weight from Health) | `HKQuantityTypeIdentifier.physicalEffort` |
 | Workout effort, 1–10 scale (average HR ÷ age-based max HR, Tanaka) | `.estimatedWorkoutEffortScore` (iOS 18+, via `relateWorkoutEffortSample`) |
-| Heart-rate recovery (peak at the end of the workout − HR/min at end+60 s) | `HKQuantityTypeIdentifier.heartRateRecoveryOneMinute` |
+| Heart-rate recovery (peak at the end of the workout − HR/min at end+60 s, with `HKMetadataKeyHeartRateRecovery*`) | `HKQuantityTypeIdentifier.heartRateRecoveryOneMinute` |
 | Sleep heartbeats (RR intervals, type 1 packets) | `HKSeriesType.heartbeat()` via `HKHeartbeatSeriesBuilder` — one series per ~10 min block |
 | Sleep HRV (SDNN of each clean minute) | `HKQuantityTypeIdentifier.heartRateVariabilitySDNN` |
-| Speed during a workout (V2 GPS points, m/s) | `.runningSpeed` / `.cyclingSpeed` |
-| Average running stride (distance ÷ steps) | `HKQuantityTypeIdentifier.runningStrideLength` |
+| Speed during a workout (V2 GPS points or summary average, m/s) | `.runningSpeed` / `.walkingSpeed` / `.cyclingSpeed` |
+| Average running stride (`stepLengthAvg` or distance ÷ steps) | `HKQuantityTypeIdentifier.runningStrideLength` |
+| Running dynamics (ground contact time ms, vertical oscillation cm) | `.runningGroundContactTime` / `.runningVerticalOscillation` |
+| Average walking step length (`stepLengthAvg` or distance ÷ steps) | `HKQuantityTypeIdentifier.walkingStepLength` |
+| Cycling cadence (RPM) | `HKQuantityTypeIdentifier.cyclingCadence` |
 | Rowing distance (iOS 18+; before that it fell back to walking distance) | `HKQuantityTypeIdentifier.distanceRowing` |
 
-> **`appleStandHour` is NOT writable.** `HKCategoryTypeIdentifier.appleStandHour` is reserved (the system derives it from the Apple Watch). Including it in `requestAuthorization(toShare:)` throws `NSInvalidArgumentException`. The band's standing-hours mask stays local only — there is no "stand hour" type writable by third-party apps. The same goes for `appleExerciseTime`, `appleMoveTime`, `appleStandTime` (activity rings) and `walkingHeartRateAverage` — all read-only for third parties, no workaround.
+> **`appleStandHour` is NOT writable.** `HKCategoryTypeIdentifier.appleStandHour` is reserved (the system derives it from the Apple Watch). Including it in `requestAuthorization(toShare:)` throws `NSInvalidArgumentException`. The band's standing-hours mask stays local only — there is no "stand hour" type writable by third-party apps. The same goes for `appleExerciseTime`, `appleMoveTime`, `appleStandTime` (activity rings) and `walkingHeartRateAverage` — all read-only for third parties, no workaround. Because `walkingHeartRateAverage` is Apple-Watch-only, the app tags all `heartRate` samples with `HKMetadataKeyHeartRateMotionContext` (`.active` vs `.sedentary`) and `HKMetadataKeyUserMotionContext`, and computes the daily Walking Heart Rate Average (`20...140` steps/min) locally in `ActivityDay.walkingHeartRateAvg` (`DashboardView`).
 >
-> **Heart-rate recovery runs on the daily-file path, not in `writeWorkouts`.** The workout's 1 Hz series ends exactly at the end of the workout (count == duration), so the end+60 s reading only arrives in the next daily detail file. `writeHeartRateRecoveries` queries the app's **own** recent workouts in Health (regardless of which sync wrote the workout), matches the peak of the last minute (1 Hz series, `HKStatisticsQuery` discreteMax) with the per-minute reading closest to end+60 s (±30 s) and writes the delta. Best-effort in `BandSyncer` — it doesn't block the file ACKs.
+> **Heart-rate recovery runs on the daily-file and post-workout recovery paths.** The workout's 1 Hz series ends at the end of the workout (`MiBandWorkoutRealEnd`), so the end+60 s reading arrives either in the 3-minute post-strength recovery stream (`WorkoutGpsService.onRecoveryHRRecorded`) or in the next daily detail file. `writeHeartRateRecoveries` queries the app's **own** recent workouts in Health, matches the peak of the last 2 minutes with the reading closest to `realEnd + 60 s` (from the incoming batch or already stored in HealthKit) and writes `heartRateRecoveryOneMinute` with official `HKMetadataKeyHeartRateRecovery*` metadata.
 >
-> **HRV: SDNN per minute, the Apple Watch window.** SDNN increases with the window (nights of 2026-10-01…03: median 46–59 ms in 1 min, 63–78 ms in 5 min) and Health does not record which window was used, so mixing windows would make values incomparable. `HeartRateVariability`, pure and tested against real nights:
+> **HRV & Overnight Respiratory Rate.** SDNN increases with the window (nights of 2026-10-01…03: median 46–59 ms in 1 min, 63–78 ms in 5 min) and Health does not record which window was used, so mixing windows would make values incomparable. `HeartRateVariability`, pure and tested against real nights:
 > - An artifact is an interval outside 300–2000 ms or >20% from the median of the 5 neighbors on each side (~3% in real night).
 > - A minute, counted from the first beat of the block, only gets a value with ≥50 s of intervals and ≥80% clean; otherwise it leaves a gap, not a number.
 > - Sample SDNN (n−1). RMSSD is not used: the 40 ms resolution zeroes out one-third of successive differences.
+> - Each ~10 min beat-to-beat block also yields an overnight `respiratoryRate` sample (`mb-resp-<ts>`, breaths/min) via Respiratory Sinus Arrhythmia (RSA) peak-to-peak cycle detection in the physiological sleeping breathing band (10–24 breaths/min).
 > - The heartbeat series stores all beats. The beat closing a rejected interval carries `precededByGap`, and the series starts 10 ms before the first beat because the builder requires positive offset.
 > - Per-minute values have sync id `mb-hrv-<s>` with `hrvVersion`. Series have `mb-beats-<ms>` and are queried in Health before writing, since the builder does not replace.
 > - Best-effort write after sleep: a failure never holds back the ACK, and the stored file reconstructs everything.
-
-> **Mobility remains exclusive to the iPhone.** `walkingSpeed`/`walkingStepLength` are writable, but they would feed the Mobility metrics that the reconciliation deliberately preserves — that is why the speed series is only written for running/cycling (`speedType(_:)` returns nil for walking/hiking) and the stride uses `runningStrideLength`, not `walkingStepLength`.
 
 ### Permissions (Info.plist)
 ```
@@ -473,10 +478,12 @@ The UI is built from the **Claude Design** handoff (`My Band — Design System`,
 }
 
 @Model class ActivityDay {
-    var date: DateComponents           // year/month/day only
+    var date: Date                     // startOfDay
     var steps: Int
     var calories: Double
     var distanceMeters: Double
+    var activeMinutes: Int
+    var walkingHeartRateAvg: Int?      // daily walking HR average (20...140 steps/min)
     var healthKitSynced: Bool
 }
 ```
@@ -500,7 +507,7 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 Entries pending release go under `## [Unreleased]`. When releasing a version, move them to `## [X.Y.Z] - YYYY-MM-DD`.
 
-Current version: **1.2.0** — see `CHANGELOG.md` for the full history. Next phase, everything **to be validated on hardware**:
+Current version: **1.4.0** (`v1.4`) — see `CHANGELOG.md` for the full history. Next phase, everything **to be validated on hardware**:
 
 1. Patient pairing on a genuinely **new** pairing (ADR 0003 + addendum) — the 180 s window spanning the bonding link drop, `PairingStage` advancing to `.phone`, whether the iOS sheet really produces an observable `CBATTError.insufficientAuthentication` (or comes up without rejecting any write), and the session restart the band does after the accept. The 2026-09-05 logs came from an already-paired band and from attempts that failed, not from a successful accept.
 2. The full sync after the session-restart fix — if the band reopens the session and the app re-derives the keys, `FETCH_TODAY` should finally get a response instead of only ACKs. In the console, a sync on a new connection should show `FETCH_TODAY cut short by a band session restart — re-sending after re-auth` followed by `FETCH_TODAY → N file ID(s)`, and for each night a `Sleep file …` line.

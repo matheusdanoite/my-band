@@ -55,6 +55,15 @@ struct HeartRateVariabilityTests {
         #expect(minutes.first?.end == t0.addingTimeInterval(60))
     }
 
+    @Test func aRealNightYieldsOvernightRespiratoryRateFromRSA() {
+        let blocks = realNight().beatWindows
+        let resp = blocks.compactMap(HeartRateVariability.respiratoryRate)
+        #expect(resp.count == 27)
+        #expect(resp.allSatisfy { (13.0 ... 17.0).contains($0.breathsPerMinute) })
+        #expect(resp.first?.breathsPerMinute == 16.7)
+        #expect(resp.first?.start == t0)
+    }
+
     // MARK: - Rules
 
     @Test func implausibleAndOutOfLineIntervalsAreRejected() {

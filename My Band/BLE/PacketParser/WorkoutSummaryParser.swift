@@ -48,6 +48,11 @@ struct WorkoutSummary {
     var duration: TimeInterval { max(0, endDate.timeIntervalSince(startDate)) }
     var activeSeconds: Double?  { fields[WorkoutKey.activeSeconds] }
     var caloriesKcal: Double?   { positive(WorkoutKey.calories) }
+    var caloriesTotalKcal: Double? { positive(WorkoutKey.caloriesTotal) }
+    var basalCaloriesKcal: Double? {
+        guard let total = caloriesTotalKcal, let active = caloriesKcal, total > active else { return nil }
+        return total - active
+    }
     var distanceMeters: Double? { positive(WorkoutKey.distance) }
     var steps: Double?          { positive(WorkoutKey.steps) }
     var strokes: Double?        { positive(WorkoutKey.strokes) }
@@ -55,6 +60,22 @@ struct WorkoutSummary {
     var hrAvg: Double?          { positive(WorkoutKey.hrAvg) }
     var hrMax: Double?          { positive(WorkoutKey.hrMax) }
     var hrMin: Double?          { positive(WorkoutKey.hrMin) }
+    var speedAvgKmh: Double?    { positive(WorkoutKey.speedAvg) }
+    var speedMaxKmh: Double?    { positive(WorkoutKey.speedMax) }
+    var stepLengthAvgCm: Double? { positive("stepLengthAvg") }
+    var stepRateAvgSpm: Double? { positive("stepRateAvg") }
+    var cadenceAvgRpm: Double?  { positive("cadenceAvg") ?? positive("stepRateAvg") }
+    var avgGroundContactTimeMs: Double? { positive("avgGroundContactTime") }
+    var avgVerticalOscillationCm: Double? { positive("avgVerticalOscillation") }
+    var elevationGainMeters: Double? { positive("elevationGain") }
+    var elevationLossMeters: Double? { positive("elevationLoss") }
+    var swolfAvg: Int?          { positive("swolfAvg").map { Int($0.rounded()) } }
+    var laps: Int?              { positive(WorkoutKey.laps).map { Int($0.rounded()) } }
+    var configuredLaneLengthMeters: Double? { positive("configuredLaneLength") }
+    var trainingEffectAerobic: Double?   { positive("trainingEffectAerobic") }
+    var trainingEffectAnaerobic: Double? { positive("trainingEffectAnaerobic") }
+    var workoutLoad: Double?    { positive("workoutLoad") }
+    var recoveryTimeHours: Double? { positive("recoveryTime") }
 
     private func positive(_ key: String) -> Double? {
         guard let v = fields[key], v > 0 else { return nil }

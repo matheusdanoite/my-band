@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import HealthKit
 import OSLog
 #if canImport(UIKit)
 import UIKit
@@ -122,6 +123,7 @@ final class BandSyncer {
     private(set) var lastHealthSync: Date?
     private(set) var lastError: Error?
     private(set) var currentDevice: BandDevice?
+    private(set) var todayWalkingHeartRateAvg: Int?
 
     private weak var bandManager: BandManager?
     private var modelContext: ModelContext?
@@ -130,6 +132,8 @@ final class BandSyncer {
     private let findPhone    = FindPhoneService()
     private let calendarSync = CalendarSyncService()
     private let weatherSync  = WeatherSyncService()
+    private var savedWorkoutsByStart: [Int: HKWorkout] = [:]
+    private var pendingRecoveryHRByStart: [Int: [WorkoutHRSample]] = [:]
 
     /// Live only while a command/response exchange is pending; BandManager.onSessionRestart yields
     /// into it so the exchange fails fast instead of waiting out its timeout.
@@ -166,6 +170,33 @@ final class BandSyncer {
 
         workoutGps.onWorkoutFinished = { [weak self] fileIds in
             Task { @MainActor in await self?.handleWorkoutFinished(fileIds) }
+        }
+        workoutGps.onRecoveryHRRecorded = { [weak self] strengthStart, samples in
+            Task { @MainActor in await self?.handleRecoveryHRRecorded(strengthStart: strengthStart, samples: samples) }
+        }
+    }
+
+    private func handleRecoveryHRRecorded(strengthStart: Date?, samples: [WorkoutHRSample]) async {
+        guard !samples.isEmpty else { return }
+        let startTs = strengthStart.map { Int($0.timeIntervalSince1970) }
+        let matchedWorkout: HKWorkout?
+        if let startTs {
+            matchedWorkout = savedWorkoutsByStart
+                .filter { abs($0.key - startTs) <= 120 }
+                .min { abs($0.key - startTs) < abs($1.key - startTs) }?
+                .value
+            if matchedWorkout == nil {
+                pendingRecoveryHRByStart[startTs] = samples
+            }
+        } else {
+            matchedWorkout = nil
+        }
+        do {
+            let count = try await HealthKitManager.shared.writeRecoveryHR(samples, toWorkout: matchedWorkout)
+            log.info("Post-workout recovery HR written: \(count) sample(s) (attached=\(matchedWorkout != nil))")
+            _ = try? await HealthKitManager.shared.writeHeartRateRecoveries(minutes: [])
+        } catch {
+            log.error("Post-workout recovery HR write failed: \(error.localizedDescription)")
         }
     }
 
@@ -241,6 +272,9 @@ final class BandSyncer {
         currentDevice = (try? context.fetch(descriptor))?.first
         lastHealthSync = currentDevice?.lastHealthSyncDate
         lastSyncDate = currentDevice?.lastSyncDate
+        let today = Calendar.current.startOfDay(for: Date())
+        let dayDescriptor = FetchDescriptor<ActivityDay>(predicate: #Predicate { $0.date == today })
+        todayWalkingHeartRateAvg = (try? context.fetch(dayDescriptor))?.first?.walkingHeartRateAvg
     }
 
     // MARK: - Apple Health sync
@@ -305,6 +339,7 @@ final class BandSyncer {
             throw error
         }
 
+        await HealthKitManager.shared.cleanupPre2020CorruptedSamplesIfNeeded()
         await repairSleepHistoryOnce(context: context)
         await rebuildSleepHistoryFromHealthOnce()
         await reparseStoredSleepIfParserChanged(context: context)
@@ -634,8 +669,47 @@ final class BandSyncer {
 
         if !workoutsToWrite.isEmpty {
             outcome.workouts = workoutsToWrite.count
-            let result = try await HealthKitManager.shared.writeWorkouts(workoutsToWrite, routes: workoutRoutes, heartRates: workoutHeartRates)
+            for (ts, track) in workoutGps.consumeStrengthRoutes() where workoutRoutes[ts] == nil && !track.isEmpty {
+                workoutRoutes[ts] = track
+            }
+            if weatherSync.lastConditions == nil, manager.connectionState.isConnected {
+                await weatherSync.pushWeather()
+            }
+            var weatherMap: [Int: WorkoutWeather] = [:]
+            if let wx = weatherSync.lastConditions {
+                let cutoff = Date().addingTimeInterval(-24 * 3600)
+                for w in workoutsToWrite where w.startDate >= cutoff {
+                    weatherMap[Int(w.startDate.timeIntervalSince1970)] = wx
+                }
+            }
+            var endExtension: [Int: TimeInterval] = [:]
+            if let pendingStart = workoutGps.recoveryPendingStrengthStart {
+                let pendingTs = Int(pendingStart.timeIntervalSince1970)
+                for w in workoutsToWrite {
+                    let key = Int(w.startDate.timeIntervalSince1970)
+                    if abs(key - pendingTs) <= 120 {
+                        endExtension[key] = WorkoutGpsService.recoveryDuration
+                    }
+                }
+            }
+            let result = try await HealthKitManager.shared.writeWorkouts(
+                workoutsToWrite,
+                routes: workoutRoutes,
+                heartRates: workoutHeartRates,
+                weather: weatherMap,
+                endExtension: endExtension
+            )
             outcome.healthSamplesWritten += result.written
+            for (key, hkWorkout) in result.saved {
+                savedWorkoutsByStart[key] = hkWorkout
+                if let pendingMatch = pendingRecoveryHRByStart.keys.first(where: { abs($0 - key) <= 120 }),
+                   let pendingSamples = pendingRecoveryHRByStart.removeValue(forKey: pendingMatch) {
+                    _ = try? await HealthKitManager.shared.writeRecoveryHR(pendingSamples, toWorkout: hkWorkout)
+                }
+            }
+            if detailMinutes.isEmpty {
+                _ = try? await HealthKitManager.shared.writeHeartRateRecoveries(minutes: [])
+            }
         }
         // Workout summary + GPS files: a GPS file can be pending without a parseable summary (its
         // summary was ACKed in an earlier sync), which used to leave it dangling forever.
@@ -645,6 +719,7 @@ final class BandSyncer {
         // against the iPhone — excluding minutes inside a workout, whose distance/energy the workout
         // samples above already contribute.
         if !detailMinutes.isEmpty {
+            persistWalkingHeartRate(detailMinutes, context)
             let workoutWindows = workoutsToWrite.map { (start: $0.startDate, end: $0.endDate) }
             outcome.healthSamplesWritten += try await HealthKitManager.shared.writeMinuteSamples(detailMinutes)
             outcome.healthSamplesWritten += try await HealthKitManager.shared.writeReconciledActivity(detailMinutes, excludingWorkouts: workoutWindows)
@@ -949,8 +1024,8 @@ final class BandSyncer {
         do {
             let r = try await HealthKitManager.shared.writeHeartRateVariability(blocks)
             let median = r.medianSDNN.map { "\(Int($0.rounded())) ms" } ?? "—"
-            log.info("HRV: \(r.minuteValues) minute value(s) (median SDNN \(median)), \(r.seriesWritten) heartbeat series written, \(r.seriesAlreadyThere) already in Health")
-            return r.minuteValues + r.seriesWritten
+            log.info("HRV: \(r.minuteValues) minute value(s) (median SDNN \(median)), \(r.respiratoryValues) respiratory rate(s), \(r.seriesWritten) heartbeat series written, \(r.seriesAlreadyThere) already in Health")
+            return r.minuteValues + r.respiratoryValues + r.seriesWritten
         } catch {
             log.error("HRV write failed: \(DiagnosticLog.describe(error))")
             return 0
@@ -963,7 +1038,9 @@ final class BandSyncer {
     // next foreground sync re-parses every stored file and rewrites its night. 2 = only the last
     // stage re-scoring per night (before, every re-scoring was merged, the earliest winning).
     // 3 = beat-to-beat intervals decoded, so stored nights gain heart rate variability.
-    static let sleepParserRevision = 3
+    // 4 = v5 headerIdx off-by-one fixed (unlocks overnight SpO₂), <3h finalized short-sleep fallback,
+    //     and overnight respiratoryRate derived from RSA beat-to-beat modulation.
+    static let sleepParserRevision = 4
     private static let sleepParserRevisionKey = "sleepParserRevisionApplied"
 
     private func reparseStoredSleepIfParserChanged(context: ModelContext) async {
@@ -984,19 +1061,28 @@ final class BandSyncer {
     private func reparseStoredSleep(_ context: ModelContext) async throws -> (reports: Int, nights: Int) {
         // No `rawData != nil` predicate — see pruneRawData.
         var reread: [SleepSession] = []
+        var vitals: [ActivityMinuteSample] = []
         var beats: [BeatWindow] = []
         for report in (try? context.fetch(FetchDescriptor<SleepSession>())) ?? [] {
             guard let raw = report.rawData, let meta = XiaomiActivityFileMeta(Data(raw.prefix(7))), meta.isSleep else { continue }
             let parsed = Self.parseSleepFile(raw, meta: meta)
+            vitals += parsed.heartRates.map { ActivityMinuteSample(date: $0.date, heartRate: $0.bpm) }
+                + parsed.spo2.map { ActivityMinuteSample(date: $0.date, spo2: $0.pct) }
+            beats += parsed.beatWindows
             guard let fresh = parsed.sessions.first else { continue }
             report.startDate = fresh.startDate
             report.endDate = fresh.endDate
             report.phases = fresh.phases
             report.awakeFlag = parsed.awakeFlag
             reread.append(report)
-            beats += parsed.beatWindows
         }
-        guard !reread.isEmpty else { return (0, 0) }
+        if !vitals.isEmpty {
+            _ = try? await HealthKitManager.shared.writeMinuteSamples(vitals)
+        }
+        guard !reread.isEmpty else {
+            _ = await writeHRV(beats)
+            return (0, 0)
+        }
         let nights = Self.withStoredReports(reread, in: context)
         _ = try await HealthKitManager.shared.writeSleep(nights)
         nights.forEach { $0.healthKitSynced = true }
@@ -1017,15 +1103,24 @@ final class BandSyncer {
 
         let files = Self.sleepFiles(inLog: text)
         var reports: [SleepSession] = []
+        var vitals: [ActivityMinuteSample] = []
         var beats: [BeatWindow] = []
         for (data, meta) in files {
             let parsed = Self.parseSleepFile(data, meta: meta)
+            vitals += parsed.heartRates.map { ActivityMinuteSample(date: $0.date, heartRate: $0.bpm) }
+                + parsed.spo2.map { ActivityMinuteSample(date: $0.date, spo2: $0.pct) }
             beats += parsed.beatWindows
             reports += parsed.sessions.map {
                 storeReport($0, raw: data, awakeFlag: parsed.awakeFlag, seenAt: nil, context)
             }
         }
-        guard !reports.isEmpty else { return (files.count, 0) }
+        if !vitals.isEmpty {
+            _ = try? await HealthKitManager.shared.writeMinuteSamples(vitals)
+        }
+        guard !reports.isEmpty else {
+            _ = await writeHRV(beats)
+            return (files.count, 0)
+        }
         let nights = Self.withStoredReports(reports, in: context)
         _ = try await HealthKitManager.shared.writeSleep(nights)
         nights.forEach { $0.healthKitSynced = true }
@@ -1066,6 +1161,22 @@ final class BandSyncer {
         record.calories = Double(summary.caloriesKcal)
         record.device = currentDevice
         if existing == nil { context.insert(record) }
+    }
+
+    private func persistWalkingHeartRate(_ minutes: [ActivityMinuteSample], _ context: ModelContext) {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let grouped = Dictionary(grouping: minutes) { cal.startOfDay(for: $0.date) }
+        for (day, dayMinutes) in grouped {
+            guard let avg = HealthKitManager.walkingHeartRateAverage(dayMinutes) else { continue }
+            let descriptor = FetchDescriptor<ActivityDay>(predicate: #Predicate { $0.date == day })
+            let existing = (try? context.fetch(descriptor))?.first
+            let record = existing ?? ActivityDay(date: day)
+            record.walkingHeartRateAvg = avg
+            record.device = currentDevice
+            if existing == nil { context.insert(record) }
+            if day == today { todayWalkingHeartRateAvg = avg }
+        }
     }
 
     // MARK: - Band session restarts

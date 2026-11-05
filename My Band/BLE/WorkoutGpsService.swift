@@ -65,7 +65,8 @@ final class WorkoutGpsService: NSObject {
 
     /// The sparse-GPS cadence for strength: one recorded point every 10 minutes.
     private let strengthFixInterval: TimeInterval = 600
-    private let recoveryDuration: TimeInterval = 180
+    static let recoveryDuration: TimeInterval = 180
+    private var recoveryDuration: TimeInterval { Self.recoveryDuration }
 
     // MARK: - Setup
 
