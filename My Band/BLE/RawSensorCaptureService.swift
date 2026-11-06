@@ -74,7 +74,9 @@ final class RawSensorCaptureService {
         stopTask?.cancel()
         stopTask = nil
 
-        bandManager?.setRealtimeStats(enabled: false)
+        if !AppServices.shared.realtimeHR.isActiveSharing {
+            bandManager?.setRealtimeStats(enabled: false)
+        }
         for command in XiaomiRawSensorProtocol.stopCommands() {
             bandManager?.sendEncryptedCommand(protoBytes: command)
         }

@@ -483,11 +483,13 @@ final class BandSyncer {
         var workoutHeartRates: [Int: [WorkoutHRSample]] = [:]
 
         var detailMinutes: [ActivityMinuteSample] = []
+        var dailySummariesToWrite: [DailySummary] = []
 
-        var sleepIds:   [Data] = []
-        var manualIds:  [Data] = []
-        var workoutIds: [Data] = []
-        var detailIds:  [Data] = []
+        var sleepIds:        [Data] = []
+        var manualIds:       [Data] = []
+        var workoutIds:      [Data] = []
+        var dailySummaryIds: [Data] = []
+        var detailIds:       [Data] = []
 
         // Routes one fetched, CRC-valid file into its batch (or writes and ACKs it inline).
         func route(_ fileId: Data, _ fileData: Data) async {
@@ -536,9 +538,9 @@ final class BandSyncer {
                     if let summary = DailySummaryParser.parse(fileData, meta: meta) {
                         outcome.dailySummaries += 1
                         persistActivityDay(summary, context)
-                        outcome.healthSamplesWritten += try await HealthKitManager.shared.writeDailySummary(summary)
+                        dailySummariesToWrite.append(summary)
                     }
-                    sendAck(fileId: fileId, manager: manager)
+                    dailySummaryIds.append(fileId)
                 } else if meta.isDailyDetails {
                     // Batched (not written inline) so the reconciliation can exclude minutes covered
                     // by a workout — those file ids are only fully known after the loop.
@@ -715,12 +717,24 @@ final class BandSyncer {
         // summary was ACKed in an earlier sync), which used to leave it dangling forever.
         workoutIds.forEach { sendAck(fileId: $0, manager: manager) }
 
+        let workoutWindows = workoutsToWrite.map { (start: $0.startDate, end: $0.endDate) }
+
+        // Daily summaries run after workouts so `writeDailySummary` subtracts both already-saved
+        // HealthKit workouts and any workouts synced in this same batch when pro-rating non-workout
+        // daily Resting Energy (`basalEnergyBurned`).
+        for summary in dailySummariesToWrite {
+            outcome.healthSamplesWritten += try await HealthKitManager.shared.writeDailySummary(
+                summary,
+                excludingWorkouts: workoutWindows
+            )
+        }
+        dailySummaryIds.forEach { sendAck(fileId: $0, manager: manager) }
+
         // Daily details last: HR/SpO₂ raw (band-exclusive), and steps/distance/energy reconciled
         // against the iPhone — excluding minutes inside a workout, whose distance/energy the workout
         // samples above already contribute.
         if !detailMinutes.isEmpty {
             persistWalkingHeartRate(detailMinutes, context)
-            let workoutWindows = workoutsToWrite.map { (start: $0.startDate, end: $0.endDate) }
             outcome.healthSamplesWritten += try await HealthKitManager.shared.writeMinuteSamples(detailMinutes)
             outcome.healthSamplesWritten += try await HealthKitManager.shared.writeReconciledActivity(detailMinutes, excludingWorkouts: workoutWindows)
             // Cardio Recovery: pairs recent workouts already in Health with the post-workout

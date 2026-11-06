@@ -139,6 +139,7 @@ final class WorkoutGpsService: NSObject {
                 isActive       = true
                 gpsFixAcquired = false
                 workoutStarted = false
+                locationManager.desiredAccuracy = kCLLocationAccuracyBest
                 locationManager.startUpdatingLocation()
             }
 
@@ -147,6 +148,7 @@ final class WorkoutGpsService: NSObject {
                 isActive       = true
                 gpsFixAcquired = false
                 workoutStarted = false
+                locationManager.desiredAccuracy = kCLLocationAccuracyBest
                 log.info("Starting CoreLocation for workout (sport=\(sport))")
                 locationManager.startUpdatingLocation()
             }
@@ -265,10 +267,23 @@ final class WorkoutGpsService: NSObject {
         log.info("Strength finished — recording \(Int(self.recoveryDuration))-s HR recovery (realtime)")
         recoveryTimer?.cancel()
         recoveryTimer = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(self?.recoveryDuration ?? 180))
+            let totalSeconds = self?.recoveryDuration ?? 180
+            let refreshInterval: TimeInterval = 25
+            var elapsed: TimeInterval = 0
+            while elapsed < totalSeconds {
+                let step = min(refreshInterval, totalSeconds - elapsed)
+                try? await Task.sleep(for: .seconds(step))
+                guard let self, !Task.isCancelled else { return }
+                elapsed += step
+                if elapsed < totalSeconds {
+                    self.bandManager?.setRealtimeStats(enabled: true)
+                }
+            }
             guard let self, !Task.isCancelled else { return }
             let samples = self.recoveryHR
-            self.bandManager?.setRealtimeStats(enabled: false)
+            if !AppServices.shared.realtimeHR.isActiveSharing {
+                self.bandManager?.setRealtimeStats(enabled: false)
+            }
             self.stopLocalRecording()
             self.recoveryPendingStrengthStart = nil
             self.log.info("HR recovery done — \(samples.count) sample(s)")
@@ -300,6 +315,7 @@ final class WorkoutGpsService: NSObject {
     private func stopLocalRecording() {
         recoveryTimer?.cancel(); recoveryTimer = nil
         locationManager.stopUpdatingLocation()
+        locationManager.desiredAccuracy = kCLLocationAccuracyBest
         localMode = .none
         localStart = nil
         localRoute = []

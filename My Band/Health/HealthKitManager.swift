@@ -488,7 +488,8 @@ final class HealthKitManager {
 
     // MARK: - Daily summary (steps, calories, HR/SpO₂ extremes)
 
-    func writeDailySummary(_ s: DailySummary) async throws -> Int {
+    func writeDailySummary(_ s: DailySummary,
+                           excludingWorkouts additionalWindows: [(start: Date, end: Date)] = []) async throws -> Int {
         var samples: [HKSample] = []
         let dayStart = Calendar.current.startOfDay(for: s.date)
         let dayEnd = min(dayStart.addingTimeInterval(86_400 - 1), Date())
@@ -525,9 +526,16 @@ final class HealthKitManager {
         if canShare(basalEnergy), dayEnd > dayStart {
             let dailyBMR = await estimatedDailyBasalKilocalories()
             let workouts = (try? await ownWorkouts(endingBetween: dayStart, and: dayEnd.addingTimeInterval(7200))) ?? []
-            let workoutWindows: [(start: Date, end: Date)] = workouts.compactMap { w in
-                let start = max(dayStart, w.startDate)
-                let end = min(dayEnd, w.endDate)
+            var rawWindows: [(start: Date, end: Date)] = workouts.map { w in
+                if let realEndEpoch = w.metadata?["MiBandWorkoutRealEnd"] as? TimeInterval, realEndEpoch > 0 {
+                    return (start: w.startDate, end: Date(timeIntervalSince1970: realEndEpoch))
+                }
+                return (start: w.startDate, end: w.endDate)
+            }
+            rawWindows += additionalWindows
+            let workoutWindows: [(start: Date, end: Date)] = rawWindows.compactMap { w in
+                let start = max(dayStart, w.start)
+                let end = min(dayEnd, w.end)
                 return end > start ? (start: start, end: end) : nil
             }
             let workoutSeconds = Self.coveredDuration(workoutWindows)
@@ -1553,11 +1561,34 @@ final class HealthKitManager {
         [HKMetadataKeySyncIdentifier: id, HKMetadataKeySyncVersion: version ?? syncVersion]
     }
 
+    /// HealthKit throws `HKError.errorInvalidArgument` if two samples in the same `store.save(_:)`
+    /// call share an identical `HKMetadataKeySyncIdentifier` (for instance, when multiple reports
+    /// of the same sleep night or overlapping activity files are flushed in a single batch).
+    /// Keeps the last occurrence for each sync identifier while preserving order.
+    static func deduplicatingBySyncIdentifier(_ samples: [HKSample]) -> [HKSample] {
+        guard samples.count > 1 else { return samples }
+        var lastIndexById: [String: Int] = [:]
+        lastIndexById.reserveCapacity(samples.count)
+        for (idx, sample) in samples.enumerated() {
+            if let syncId = sample.metadata?[HKMetadataKeySyncIdentifier] as? String {
+                lastIndexById[syncId] = idx
+            }
+        }
+        guard !lastIndexById.isEmpty else { return samples }
+        return samples.enumerated().compactMap { idx, sample in
+            guard let syncId = sample.metadata?[HKMetadataKeySyncIdentifier] as? String else {
+                return sample
+            }
+            return lastIndexById[syncId] == idx ? sample : nil
+        }
+    }
+
     @discardableResult
     private func save(_ samples: [HKSample]) async throws -> Int {
-        guard !samples.isEmpty else { return 0 }
-        try await store.save(samples)
-        return samples.count
+        let unique = Self.deduplicatingBySyncIdentifier(samples)
+        guard !unique.isEmpty else { return 0 }
+        try await store.save(unique)
+        return unique.count
     }
 }
 

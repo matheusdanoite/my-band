@@ -1101,6 +1101,9 @@ final class BandManager: NSObject {
         sendPostAuthInit()
         startGattBatteryUpdates()
         startGattHeartRateUpdates()
+        if AppServices.shared.realtimeHR.isActiveSharing {
+            setRealtimeStats(enabled: true)
+        }
     }
 
     /// Subscribes to and reads GATT 2A19. Post-auth only, on purpose: if the characteristic needs

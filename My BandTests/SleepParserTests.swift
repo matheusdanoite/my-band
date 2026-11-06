@@ -282,4 +282,41 @@ struct SleepParserTests {
         #expect(parsed16?.rrIntervalsMs.count == 1)
         #expect(abs((parsed16?.rrIntervalsMs.first ?? 0) - 1000.0) < 0.01)
     }
+
+    @Test func deduplicatingBySyncIdentifierKeepsLastSamplePerIdentifierAndPreservesUntaggedSamples() {
+        let hrType = HKQuantityType(.heartRate)
+        let bpm = HKUnit.count().unitDivided(by: .minute())
+        let t0 = Date(timeIntervalSince1970: 1_730_000_000)
+        let t1 = t0.addingTimeInterval(60)
+
+        let firstDup = HKQuantitySample(
+            type: hrType,
+            quantity: HKQuantity(unit: bpm, doubleValue: 58),
+            start: t0, end: t0,
+            metadata: [HKMetadataKeySyncIdentifier: "mb-hr-1730000000", HKMetadataKeySyncVersion: 1]
+        )
+        let untagged = HKQuantitySample(
+            type: hrType,
+            quantity: HKQuantity(unit: bpm, doubleValue: 61),
+            start: t0, end: t0,
+            metadata: nil
+        )
+        let secondDup = HKQuantitySample(
+            type: hrType,
+            quantity: HKQuantity(unit: bpm, doubleValue: 64),
+            start: t0, end: t0,
+            metadata: [HKMetadataKeySyncIdentifier: "mb-hr-1730000000", HKMetadataKeySyncVersion: 2]
+        )
+        let distinct = HKQuantitySample(
+            type: hrType,
+            quantity: HKQuantity(unit: bpm, doubleValue: 70),
+            start: t1, end: t1,
+            metadata: [HKMetadataKeySyncIdentifier: "mb-hr-1730000060", HKMetadataKeySyncVersion: 1]
+        )
+
+        let deduped = HealthKitManager.deduplicatingBySyncIdentifier([firstDup, untagged, secondDup, distinct])
+        #expect(deduped.count == 3)
+        let values = deduped.compactMap { ($0 as? HKQuantitySample)?.quantity.doubleValue(for: bpm) }
+        #expect(values == [61, 64, 70])
+    }
 }
