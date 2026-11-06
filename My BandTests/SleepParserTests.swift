@@ -263,4 +263,23 @@ struct SleepParserTests {
         #expect(HealthKitManager.swimmingStrokeStyle("breaststroke") == .breaststroke)
         #expect(HealthKitManager.swimmingStrokeStyle("medley") == .mixed)
     }
+
+    @Test func gattHeartRatePacketParsesAndEncodesStandard2A37Payloads() {
+        // 8-bit BPM (flags = 0x06: 8-bit HR + sensor contact detected)
+        let encoded8 = GattHeartRatePacket.encode(bpm: 142, contactDetected: true)
+        #expect(encoded8 == Data([0x06, 142]))
+        let parsed8 = GattHeartRatePacket.parse(encoded8)
+        #expect(parsed8?.bpm == 142)
+        #expect(parsed8?.sensorContactDetected == true)
+        #expect(parsed8?.rrIntervalsMs == [])
+
+        // 16-bit BPM + Energy Expended + RR-Interval (flags = 0x1F: 16-bit HR + contact detected + energy + RR)
+        // BPM = 260 (0x0104), Energy = 500 kJ (0x01F4), RR = 1024/1024 s = 1000 ms (0x0400)
+        let raw16 = Data([0x1F, 0x04, 0x01, 0xF4, 0x01, 0x00, 0x04])
+        let parsed16 = GattHeartRatePacket.parse(raw16)
+        #expect(parsed16?.bpm == 260)
+        #expect(parsed16?.sensorContactDetected == true)
+        #expect(parsed16?.rrIntervalsMs.count == 1)
+        #expect(abs((parsed16?.rrIntervalsMs.first ?? 0) - 1000.0) < 0.01)
+    }
 }

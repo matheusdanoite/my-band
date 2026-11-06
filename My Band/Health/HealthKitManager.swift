@@ -596,6 +596,27 @@ final class HealthKitManager {
         return try await save(samples)
     }
 
+    /// Writes a single live heart rate reading (received via GATT 2A37 or Protobuf `RealTimeStats`)
+    /// to Apple Health with `.active` motion context and `.wrist` sensor location so third-party
+    /// fitness apps observing HealthKit (`HKObserverQuery` / `HKAnchoredObjectQuery`) receive live
+    /// BPM updates.
+    func writeLiveHeartRate(bpm: Int, date: Date = Date()) async throws -> Int {
+        guard canShare(heartRate), (30...250).contains(bpm), Self.validDateRange.contains(date) else { return 0 }
+        let bpmUnit = HKUnit.count().unitDivided(by: .minute())
+        var meta = syncMetadata("mb-livehr-\(Int(date.timeIntervalSince1970))")
+        meta[HKMetadataKeyHeartRateMotionContext] = HKHeartRateMotionContext.active.rawValue
+        meta[HKMetadataKeyUserMotionContext] = HKUserMotionContext.active.rawValue
+        meta[HKMetadataKeyHeartRateSensorLocation] = HKHeartRateSensorLocation.wrist.rawValue
+        let sample = HKQuantitySample(
+            type: heartRate,
+            quantity: HKQuantity(unit: bpmUnit, doubleValue: Double(bpm)),
+            start: date,
+            end: date,
+            metadata: meta
+        )
+        return try await save([sample])
+    }
+
     /// Daily Walking Heart Rate Average (BPM) computed from per-minute samples where the user is
     /// walking at a steady cadence (20...140 steps/min) with a plausible walking HR (40...190 bpm).
     /// `HKQuantityType(.walkingHeartRateAverage)` itself is Apple-Watch-restricted in HealthKit and

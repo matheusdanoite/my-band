@@ -34,6 +34,16 @@ enum MiBandUUID {
     /// Battery Level: a single UInt8, 0–100.
     static let batteryLevel   = CBUUID(string: "00002A19-0000-1000-8000-00805F9B34FB")
 
+    // MARK: - Heart Rate Service (standard GATT)
+
+    /// Standard Bluetooth SIG Heart Rate Service exposed by the Mi Band 10 (`Services: 180D, 180F, FE95`)
+    /// when Heart Rate Sharing is enabled on the band, and also used by our CBPeripheralManager repeater.
+    static let heartRateService     = CBUUID(string: "0000180D-0000-1000-8000-00805F9B34FB")
+    /// Heart Rate Measurement characteristic (`[flags: UInt8][bpm: UInt8 or UInt16 LE]...`, notify).
+    static let heartRateMeasurement = CBUUID(string: "00002A37-0000-1000-8000-00805F9B34FB")
+    /// Body Sensor Location characteristic (`UInt8`: 2 = Wrist, read).
+    static let bodySensorLocation   = CBUUID(string: "00002A38-0000-1000-8000-00805F9B34FB")
+
     // MARK: - Scan
 
     static let scanServices: [CBUUID] = [mainService]

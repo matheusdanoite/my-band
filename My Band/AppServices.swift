@@ -22,6 +22,7 @@ final class AppServices {
 
     let bandManager   = BandManager()
     let bandSyncer    = BandSyncer()
+    let realtimeHR    = RealtimeHeartRateService()
     let customization = CustomizationManager()
     let scaleManager  = ScaleManager()
     let rawSensorCapture = RawSensorCaptureService()
@@ -37,6 +38,7 @@ final class AppServices {
         didBootstrap = true
 
         bandSyncer.setup(manager: bandManager, context: container.mainContext)
+        realtimeHR.setup(manager: bandManager)
         customization.setup(manager: bandManager)
         rawSensorCapture.setup(manager: bandManager)
         bandSyncer.loadStoredDevice()
@@ -59,6 +61,7 @@ final class AppServices {
     /// was suspended left nothing pending, so returning to foreground never shows a dead "disconnected" state.
     func reconnectIfNeeded() {
         guard AuthKeyStore.isStored,
+              !bandManager.isPausedForExternalHR,
               let id = bandSyncer.currentDevice?.peripheralIdentifier,
               !bandManager.connectionState.isConnected else { return }
         bandManager.reconnectToKnownDevice(identifier: id)

@@ -52,6 +52,7 @@ struct My_BandApp: App {
             RootView()
                 .environment(services.bandManager)
                 .environment(services.bandSyncer)
+                .environment(services.realtimeHR)
                 .environment(services.customization)
                 .environment(services.scaleManager)
                 .environment(services.rawSensorCapture)

@@ -993,9 +993,22 @@ final class BandSyncer {
         let nights = Self.withStoredReports(pending, in: context)
         do {
             let written = try await HealthKitManager.shared.writeSleep(nights)
+            var vitals: [ActivityMinuteSample] = []
+            var beats: [BeatWindow] = []
+            for report in nights {
+                guard let raw = report.rawData,
+                      let meta = XiaomiActivityFileMeta(Data(raw.prefix(7))),
+                      meta.isSleep else { continue }
+                let parsed = Self.parseSleepFile(raw, meta: meta)
+                vitals += parsed.heartRates.map { ActivityMinuteSample(date: $0.date, heartRate: $0.bpm) }
+                    + parsed.spo2.map { ActivityMinuteSample(date: $0.date, spo2: $0.pct) }
+                beats += parsed.beatWindows
+            }
+            let vitalsWritten = (try? await HealthKitManager.shared.writeMinuteSamples(vitals)) ?? 0
+            let hrvWritten = await writeHRV(beats)
             nights.forEach { $0.healthKitSynced = true }
             try? context.save()
-            log.info("Pending sleep written — \(pending.count) report(s) kept while locked, \(written) sample(s)")
+            log.info("Pending sleep written — \(pending.count) report(s) kept while locked, \(written) stage sample(s), \(vitalsWritten) vital(s), \(hrvWritten) HRV/respiratory sample(s)")
         } catch {
             log.error("Pending sleep write failed, will retry: \(DiagnosticLog.describe(error))")
         }

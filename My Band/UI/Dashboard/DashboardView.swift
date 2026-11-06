@@ -9,6 +9,7 @@ struct DashboardView: View {
 
     @Environment(BandManager.self) private var band
     @Environment(BandSyncer.self) private var syncer
+    @Environment(RealtimeHeartRateService.self) private var realtimeHR
     var onForget: () -> Void
 
     @State private var syncing = false
@@ -40,6 +41,7 @@ struct DashboardView: View {
                         showRawSensorCapture = true
                     }
                     metrics
+                    liveHeartRateSection
                     syncSection
                     MBButton(title: "Customize", variant: .secondary, size: .lg,
                              icon: "square.grid.2x2", block: true, disabled: !connected) {
@@ -89,30 +91,69 @@ struct DashboardView: View {
     // MARK: Metrics
 
     private var metrics: some View {
+        HStack(spacing: MB.Space.x3) {
+            MBMetricTile(
+                icon: batteryIcon, tint: batteryTint, tintSoft: batteryTintSoft,
+                label: "Battery",
+                value: band.batteryLevel.map(String.init) ?? "—",
+                unit: band.batteryLevel != nil ? "%" : nil,
+                foot: band.batteryCharging ? "Charging" : nil
+            )
+            MBMetricTile(
+                icon: "heart.fill", tint: MB.hr, tintSoft: MB.hrSoft,
+                label: "Apple Health",
+                value: lastSyncText,
+                foot: "last sync"
+            )
+        }
+    }
+
+    // MARK: Live Heart Rate Sharing
+
+    private var liveHeartRateSection: some View {
         VStack(spacing: MB.Space.x3) {
-            HStack(spacing: MB.Space.x3) {
-                MBMetricTile(
-                    icon: batteryIcon, tint: batteryTint, tintSoft: batteryTintSoft,
-                    label: "Battery",
-                    value: band.batteryLevel.map(String.init) ?? "—",
-                    unit: band.batteryLevel != nil ? "%" : nil,
-                    foot: band.batteryCharging ? "Charging" : nil
-                )
-                MBMetricTile(
-                    icon: "heart.fill", tint: MB.hr, tintSoft: MB.hrSoft,
-                    label: "Apple Health",
-                    value: lastSyncText,
-                    foot: "last sync"
-                )
+            MBButton(
+                title: realtimeHR.isActiveSharing ? "Stop live HR sharing" : "Share live HR (Health + BLE)",
+                variant: realtimeHR.isActiveSharing ? .primary : .secondary,
+                size: .lg,
+                icon: "dot.radiowaves.left.and.right",
+                block: true,
+                disabled: !connected && !realtimeHR.isActiveSharing
+            ) {
+                if realtimeHR.isActiveSharing {
+                    realtimeHR.stopSharing()
+                } else {
+                    realtimeHR.startSharing()
+                }
             }
-            if let walkingHR = syncer.todayWalkingHeartRateAvg {
-                MBMetricTile(
-                    icon: "figure.walk", tint: MB.hr, tintSoft: MB.hrSoft,
-                    label: "Walking HR",
-                    value: "\(walkingHR)",
-                    unit: "bpm",
-                    foot: "today average"
-                )
+            MBButton(
+                title: band.isPausedForExternalHR ? "Resume My Band connection" : "Release band for external app",
+                variant: .ghost,
+                size: .md,
+                icon: band.isPausedForExternalHR ? "play.circle" : "pause.circle",
+                block: true
+            ) {
+                if band.isPausedForExternalHR {
+                    band.resumeFromExternalHeartRateApp(
+                        identifier: syncer.currentDevice?.peripheralIdentifier
+                    )
+                } else {
+                    realtimeHR.stopSharing()
+                    band.pauseForExternalHeartRateApp()
+                }
+            }
+            if band.isPausedForExternalHR {
+                Text("BLE link paused so another app on this iPhone can scan for and connect directly to the band's Heart Rate Service (0x180D).")
+                    .font(.mbFootnote)
+                    .foregroundStyle(MB.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            } else if realtimeHR.isActiveSharing || realtimeHR.isBroadcastingBLE {
+                Text("Streaming live HR to Apple Health and broadcasting GATT 0x180D (\(realtimeHR.subscribedCentralsCount) receiver(s) connected).")
+                    .font(.mbFootnote)
+                    .foregroundStyle(MB.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
             }
         }
     }

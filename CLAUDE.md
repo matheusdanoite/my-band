@@ -33,6 +33,7 @@ My Band/
 │   ├── BandAuthenticator.swift   # AES-128 handshake with AuthKey
 │   ├── BandProtocol.swift        # Mi Band protocol packet encoder/decoder
 │   ├── BandSyncer.swift          # Historical data sync (sleep, steps, HR)
+│   ├── RealtimeHeartRateService.swift # Live HR sharing: GATT 2A37 + Protobuf sub=47 → HealthKit + BLE 180D repeater
 │   ├── WorkoutGpsService.swift   # GPS handshake during workouts (band→app workoutOpenWatch)
 │   ├── FindPhoneService.swift    # "Find phone": alarm on the iPhone (band→app CMD_FIND_PHONE)
 │   ├── CalendarSyncService.swift # Push app→band: language, calendar and reminders (EventKit)
@@ -96,7 +97,9 @@ My Band/
 | `0000FE95-0000-1000-8000-00805F9B34FB` | Xiaomi BLE V2 Service (the only relevant service) |
 | `0000005E-0000-1000-8000-00805F9B34FB` | TX — write (app → band, without response) |
 | `0000005F-0000-1000-8000-00805F9B34FB` | RX — notify (band → app) |
-| `0000180D-0000-1000-8000-00805F9B34FB` | Heart Rate Service (standard GATT) |
+| `0000180D-0000-1000-8000-00805F9B34FB` | Heart Rate Service (standard GATT) — subscribed post-auth and rebroadcast via `CBPeripheralManager` (`RealtimeHeartRateService`) |
+| `00002A37-0000-1000-8000-00805F9B34FB` | Heart Rate Measurement — standard GATT notify (`8-bit/16-bit BPM + contact + RR`, subscribed **only post-auth**) |
+| `00002A38-0000-1000-8000-00805F9B34FB` | Body Sensor Location — `0x02` (Wrist), exposed by the iPhone `0x180D` repeater |
 | `0000180F-0000-1000-8000-00805F9B34FB` | Battery Service (standard GATT) — what iOS reads for the Batteries widget |
 | `00002A19-0000-1000-8000-00805F9B34FB` | Battery Level — `UInt8` 0–100, read + notify (read **only post-auth**, see `CheckBandBatteryIntent`) |
 

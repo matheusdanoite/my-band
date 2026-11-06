@@ -90,6 +90,10 @@ final class BandManager: NSObject {
     /// When the current pairing wait gives up. Drives the countdown on the connecting screen.
     private(set) var pairingWaitEndsAt: Date?
 
+    /// True while the user has explicitly paused `My Band`'s BLE link so a third-party fitness app
+    /// on the same device can scan for and connect directly to the band's `0x180D` GATT HR service.
+    private(set) var isPausedForExternalHR = false
+
     // MARK: - BLE objects
 
     private var central: CBCentralManager!
@@ -108,6 +112,10 @@ final class BandManager: NSObject {
     // Set once 2A19 has answered on this link. From then on it owns `batteryLevel`, and the
     // protobuf battery reply only contributes the charging state.
     private var hasGattBatteryLevel = false
+
+    // 2A37 — standard GATT Heart Rate Measurement (service 180D), notified when HR sharing is
+    // enabled on the band ("Share heart rate" / "Compartilhar FC").
+    private var heartRateMeasurementChar: CBCharacteristic?
 
     private enum BatterySource { case gatt, protobuf }
     // In-flight refreshBattery(): the sources still owed an answer, and the callers awaiting them.
@@ -237,9 +245,13 @@ final class BandManager: NSObject {
     /// Called when the band's "find phone" feature is toggled (System, subtype=17).
     /// Param = true to start ringing the phone, false to stop (user dismissed it on the band).
     var onFindPhone:             ((Bool) -> Void)?
-    /// Called for each live real-time stats event (Health, subtype=47) while realtime is enabled.
-    /// Param = the current heart rate in bpm. Driven by setRealtimeStats(enabled:).
+    /// Called for each live real-time stats event (Health, subtype=47) while realtime is enabled,
+    /// or GATT 2A37 Heart Rate Measurement notification.
+    /// Param = the current heart rate in bpm. Driven by setRealtimeStats(enabled:) or band HR sharing.
     var onRealtimeStats:         ((Int) -> Void)?
+    /// Called for each live heart rate reading from either GATT 2A37 (`0x180D`) or Protobuf
+    /// `RealTimeStats` (`subtype=47`), feeding `RealtimeHeartRateService`.
+    var onLiveHeartRate:         ((Int, LiveHeartRateSource) -> Void)?
     /// Called when the synthetic raw-sensor workout asks to be opened.
     var onRawSensorWorkoutOpen:  (() -> Void)?
     /// Called for each raw-sensor protobuf batch (Health, subtype=53).
@@ -286,6 +298,7 @@ final class BandManager: NSObject {
         // first-time pairing and parking on it for the whole window. A band that really does
         // re-prompt still enters the wait through sub=16.
         everAuthenticated.insert(identifier)
+        isPausedForExternalHR = false
         autoReconnect = true
         reconnectAttempts = 0
         guard central.state == .poweredOn else { pendingReconnectID = uuid; return }
@@ -303,6 +316,7 @@ final class BandManager: NSObject {
     }
 
     func startScan() {
+        isPausedForExternalHR = false
         guard central.state == .poweredOn else { pendingScan = true; return }
         pendingScan = false
         reconnectAttempts = 0   // fresh user-initiated scan gets a full retry budget
@@ -320,6 +334,7 @@ final class BandManager: NSObject {
 
     func connect(to target: CBPeripheral) {
         stopScan()
+        isPausedForExternalHR = false
         peripheral = target
         peripheral?.delegate = self
         // Fresh connection (user/bootstrap, not the auth-retry reconnect loop): give it a full
@@ -372,6 +387,28 @@ final class BandManager: NSObject {
         reconnectTask = nil
         guard let p = peripheral else { return }
         central.cancelPeripheralConnection(p)
+    }
+
+    /// Temporarily releases the BLE connection and suppresses auto-reconnect so a third-party app
+    /// on the same device that only scans for unbonded/advertising `0x180D` peripherals can find
+    /// and connect directly to the band's Heart Rate Service.
+    func pauseForExternalHeartRateApp() {
+        isPausedForExternalHR = true
+        stopScan()
+        disconnect(userInitiated: true)
+        log.info("BLE connection paused for external heart rate app")
+    }
+
+    /// Resumes `My Band`'s BLE connection after `pauseForExternalHeartRateApp()`.
+    func resumeFromExternalHeartRateApp(identifier: String?) {
+        isPausedForExternalHR = false
+        if let id = identifier {
+            reconnectToKnownDevice(identifier: id)
+        } else if let p = peripheral {
+            connect(to: p)
+        } else {
+            startScan()
+        }
     }
 
     /// Connects to a known peripheral (skipping the scan) and waits until the link is fully
@@ -856,7 +893,11 @@ final class BandManager: NSObject {
             onRawSensorCommand?(protoBytes)
         case XiaomiHealthCmd.realtimeEvent where cmd.hasHealth && cmd.health.hasRealTimeStats:
             let stats = cmd.health.realTimeStats
-            if stats.hasHeartRate, stats.heartRate > 0 { onRealtimeStats?(Int(stats.heartRate)) }
+            if stats.hasHeartRate, stats.heartRate > 0 {
+                let bpm = Int(stats.heartRate)
+                onRealtimeStats?(bpm)
+                onLiveHeartRate?(bpm, .protobuf)
+            }
         default:
             // All other health subtypes (activity fetch responses etc.) go to BandSyncer.
             onProtoCommandReceived?(protoBytes)
@@ -1059,6 +1100,7 @@ final class BandManager: NSObject {
         }
         sendPostAuthInit()
         startGattBatteryUpdates()
+        startGattHeartRateUpdates()
     }
 
     /// Subscribes to and reads GATT 2A19. Post-auth only, on purpose: if the characteristic needs
@@ -1069,6 +1111,29 @@ final class BandManager: NSObject {
         guard connectionState.isConnected, let p = peripheral, let char = batteryLevelChar else { return }
         if char.properties.contains(.notify) { p.setNotifyValue(true, for: char) }
         p.readValue(for: char)
+    }
+
+    /// Subscribes to GATT 2A37 (Heart Rate Measurement on service 180D). Post-auth only for the
+    /// same reason as `startGattBatteryUpdates()`: avoids touching an encrypted characteristic
+    /// before the pairing bond is established. Once subscribed, toggling "Share heart rate" on the
+    /// band streams standard Bluetooth SIG `0x2A37` notifications directly into `My Band`.
+    private func startGattHeartRateUpdates() {
+        guard connectionState.isConnected, let p = peripheral, let char = heartRateMeasurementChar else { return }
+        if char.properties.contains(.notify) {
+            p.setNotifyValue(true, for: char)
+            log.info("Subscribed to GATT 2A37 Heart Rate Measurement")
+        }
+    }
+
+    /// Decodes a standard GATT 2A37 Heart Rate Measurement notification from the band.
+    private func handleGattHeartRateMeasurement(_ value: Data?, error: Error?) {
+        if let error {
+            log.warning("Heart Rate 2A37 notification error: \(error.localizedDescription)")
+            return
+        }
+        guard let data = value, let pkt = GattHeartRatePacket.parse(data), pkt.bpm > 0 else { return }
+        onRealtimeStats?(pkt.bpm)
+        onLiveHeartRate?(pkt.bpm, .gatt2A37)
     }
 
     /// Post-auth handshake. Mirrors GadgetBridge XiaomiSupport.onAuthSuccess():
@@ -1224,6 +1289,7 @@ final class BandManager: NSObject {
         cmdWriteChar = nil
         batteryLevelChar = nil
         hasGattBatteryLevel = false
+        heartRateMeasurementChar = nil
         resumeBatteryWaiters()
         phoneNonce   = nil
         sessionKeys  = nil
@@ -1301,9 +1367,13 @@ extension BandManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        log.info("Connected — discovering services FE95 + 180F")
+        log.info("Connected — discovering services FE95 + 180F + 180D")
         connectionState = .discoveringServices
-        peripheral.discoverServices([MiBandUUID.mainService, MiBandUUID.batteryService])
+        peripheral.discoverServices([
+            MiBandUUID.mainService,
+            MiBandUUID.batteryService,
+            MiBandUUID.heartRateService,
+        ])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -1420,6 +1490,8 @@ extension BandManager: CBPeripheralDelegate {
                 )
             case MiBandUUID.batteryService:
                 peripheral.discoverCharacteristics([MiBandUUID.batteryLevel], for: service)
+            case MiBandUUID.heartRateService:
+                peripheral.discoverCharacteristics([MiBandUUID.heartRateMeasurement], for: service)
             default:
                 break
             }
@@ -1442,6 +1514,12 @@ extension BandManager: CBPeripheralDelegate {
             batteryLevelChar = service.characteristics?.first { $0.uuid == MiBandUUID.batteryLevel }
             log.info("Battery Level 2A19 \(self.batteryLevelChar == nil ? "missing" : "found")")
             startGattBatteryUpdates()
+            return
+        }
+        if service.uuid == MiBandUUID.heartRateService {
+            heartRateMeasurementChar = service.characteristics?.first { $0.uuid == MiBandUUID.heartRateMeasurement }
+            log.info("Heart Rate Measurement 2A37 \(self.heartRateMeasurementChar == nil ? "missing" : "found")")
+            startGattHeartRateUpdates()
             return
         }
         for char in service.characteristics ?? [] {
@@ -1490,6 +1568,10 @@ extension BandManager: CBPeripheralDelegate {
         if characteristic.uuid == MiBandUUID.batteryLevel {
             // Errors included: a pending refreshBattery() must hear about a failed read, not time out.
             handleGattBatteryLevel(characteristic.value, error: error)
+            return
+        }
+        if characteristic.uuid == MiBandUUID.heartRateMeasurement {
+            handleGattHeartRateMeasurement(characteristic.value, error: error)
             return
         }
         guard error == nil, let data = characteristic.value else { return }
